@@ -1,0 +1,658 @@
+// The only file that imports mineflayer-pathfinder (architecture §10 swap point).
+import type { EventEmitter } from 'node:events'
+import { createRequire } from 'node:module'
+import type { Bot } from 'mineflayer'
+import * as pfNs from 'mineflayer-pathfinder'
+import { Vec3 } from 'vec3'
+import type { EventBus } from '../observer/events.js'
+import { ownAir } from '../observer/vitals.js'
+import type { NavDiag, NavFailClass, NavGoal, NavProfile, NavResult, V3 } from '../schema/index.js'
+import { liveView, WATER_LIKE } from './blocks.js'
+import { installCollisionEpsilon } from './physics-epsilon.js'
+import { excavationDistance, Excavator, type ExcavationTarget } from './excavate.js'
+import { goalDistance } from './goal-distance.js'
+import { excavationBudgetMs, navTimeoutMs, type GotoOptions, type Navigator } from './navigator.js'
+import { DEFAULT_STUCK, planWaypoints, StuckDetector, type StuckOptions } from './stuck.js'
+import { undergroundTarget } from './underground.js'
+import { dryStart, findWaterExits, longestWaterRun, routeToAir } from './water.js'
+
+type PF = typeof import('mineflayer-pathfinder')
+const pf: PF = ((pfNs as unknown as { default?: PF }).default ?? pfNs) as PF
+const { goals, Movements } = pf
+type PfGoal = InstanceType<typeof goals.Goal>
+type PfMovements = InstanceType<typeof Movements>
+// Pathfinder's search-node class (not exported from the package index).
+const Move = createRequire(import.meta.url)('mineflayer-pathfinder/lib/move.js') as new (x: number, y: number, z: number, remainingBlocks: number, cost: number, toBreak?: unknown[], toPlace?: unknown[]) => Node
+type Node = { x: number; y: number; z: number; remainingBlocks: number }
+type PBlock = { position: Vec3; liquid: boolean; physical: boolean; safe: boolean; type: number; name: string }
+
+const SAMPLE_MS = 250
+const IDLE_REPLAN_MS = 1500
+const MAX_REPLANS_WITHOUT_PROGRESS = 6
+const MAX_EMPTY_NOPATH = 3
+const MAX_UNSTICK = 2
+
+/** Air (0–20) at which navigation pauses to surface, even if the head just went under. */
+const LOW_AIR = 14
+/** Surface proactively when the head has been under water this long. */
+const MAX_SUBMERGED_MS = 2500
+const SURFACE_MAX_MS = 7000
+const MAX_SURFACINGS = 4
+/** In water without progress this long → try a shoreline exit. */
+const WATER_STALL_MS = 8000
+const MAX_EXIT_ATTEMPTS = 3
+/** A planned swim longer than this triggers one replan that strongly prefers dry land. */
+const LONG_SWIM_NODES = 40
+
+/** ≥ this many server position corrections within the window = the bot is wedged. */
+const CORRECTION_LOOP_N = 8
+const CORRECTION_WINDOW_MS = 1500
+const MAX_CORRECTION_LOOPS = 4
+
+const LIQUID_COST = 4
+const DRY_LIQUID_COST = 14
+
+export function loadPathfinder (bot: Bot): void {
+  installCollisionEpsilon()
+  bot.loadPlugin(pf.pathfinder)
+}
+
+/**
+ * Water-correct movement model on top of pathfinder's Movements:
+ * - kelp, seagrass and bubble columns are water (not walkable air);
+ * - no search node may have its head under water: swimming happens at the surface;
+ * - entering water lands on its surface cell (upstream lands one block under it);
+ * - from a surface cell the bot can climb onto a flush shore (upstream's jump-up
+ *   rejects every exit from deep water); physics cannot climb a 1-block ledge from
+ *   water, and pathfinder only digs on ground, so ledges are left to `exitWater`;
+ * - from a submerged cell the only move is up;
+ * - no straight-down digging (upstream `getMoveDown` digs the block underfoot).
+ */
+function waterSafe (bot: Bot, m: PfMovements): void {
+  const mm = m as unknown as {
+    liquids: Set<number>; blocksToAvoid: Set<number>; liquidCost: number
+    getBlock (n: unknown, dx: number, dy: number, dz: number): PBlock
+    getLandingBlock (n: Node, dir: { x: number; z: number }): PBlock | null
+    getNeighbors (n: Node): Node[]
+    getMoveDown (n: Node, out: Node[]): void
+  }
+  const reg = bot.registry
+  for (const n of WATER_LIKE) { const b = reg.blocksByName[n]; if (b) mm.liquids.add(b.id) }
+  if (reg.blocksByName.bubble_column) mm.blocksToAvoid.add(reg.blocksByName.bubble_column.id)
+
+  const baseLanding = mm.getLandingBlock.bind(mm)
+  mm.getLandingBlock = (node, dir) => {
+    const d = mm.getBlock(node, dir.x, -1, dir.z)
+    if (d.liquid && d.safe) return d
+    return baseLanding(node, dir)
+  }
+
+  const baseMoveDown = mm.getMoveDown.bind(mm)
+  mm.getMoveDown = (node, out) => {
+    if (mm.getBlock(node, 0, -1, 0).physical) return
+    baseMoveDown(node, out)
+  }
+
+  const dirs = [{ x: -1, z: 0 }, { x: 1, z: 0 }, { x: 0, z: -1 }, { x: 0, z: 1 }]
+  const baseNeighbors = mm.getNeighbors.bind(mm)
+  mm.getNeighbors = (node) => {
+    const here = mm.getBlock(node, 0, 0, 0)
+    const above = mm.getBlock(node, 0, 1, 0)
+    if (here.liquid && above.liquid) {
+      // Submerged: surface first.
+      return [new Move(node.x, node.y + 1, node.z, node.remainingBlocks, 1 + mm.liquidCost)]
+    }
+    const out = baseNeighbors(node).filter(n => !mm.getBlock(n, 0, 1, 0).liquid)
+    if (here.liquid && !above.liquid) {
+      for (const dir of dirs) {
+        const c = mm.getBlock(node, dir.x, 0, dir.z)
+        if (!c.physical || mm.blocksToAvoid.has(c.type)) continue
+        // Flush exits only: pathfinder digs only while on ground, so it cannot open a
+        // ledge from deep water. Ledge exits are handled by the navigator (exitWater).
+        const clear = [mm.getBlock(node, dir.x, 1, dir.z), mm.getBlock(node, 0, 2, 0), mm.getBlock(node, dir.x, 2, dir.z)].every(b => b.safe)
+        if (clear) out.push(new Move(node.x + dir.x, node.y + 1, node.z + dir.z, node.remainingBlocks, 2 + mm.liquidCost))
+      }
+    }
+    return out
+  }
+}
+
+function movementsFor (bot: Bot, profile: NavProfile, dry: boolean): PfMovements {
+  const m = new Movements(bot)
+  const items = bot.registry.itemsByName
+  m.scafoldingBlocks = ['dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'stone']
+    .map(n => items[n]?.id).filter((x): x is number => x !== undefined)
+  m.canDig = true
+  m.allowSprinting = true
+  m.maxDropDown = 4
+  const mm = m as unknown as { liquidCost: number }
+  mm.liquidCost = dry ? DRY_LIQUID_COST : LIQUID_COST
+  if (profile !== 'overworld') {
+    // Cautious default until the nether/end/stronghold profiles are built (milestones B–D).
+    m.allowParkour = false
+    m.maxDropDown = 3
+    mm.liquidCost = dry ? DRY_LIQUID_COST : LIQUID_COST + 1
+  }
+  waterSafe(bot, m)
+  return m
+}
+
+export class PathfinderNavigator implements Navigator {
+  private history: NavResult[] = []
+  private movements = new Map<string, PfMovements>()
+  private active: { abort: () => void } | null = null
+  /** Timestamps of recent server position corrections (forcedMove). */
+  private corrections: number[] = []
+  private readonly excavator: Excavator
+
+  constructor (private readonly bot: Bot, private readonly bus: EventBus, private readonly stuckOpts: StuckOptions = DEFAULT_STUCK) {
+    this.excavator = new Excavator(bot, bus)
+    bot.on('forcedMove', () => {
+      this.corrections.push(Date.now())
+      if (this.corrections.length > 64) this.corrections.shift()
+    })
+  }
+
+  /**
+   * Server keeps teleporting the bot back: the client's box sits a hair inside a
+   * block (e.g. after a jump up a 1-wide stair), every move is rejected and
+   * pathfinder never notices. Seen in M0 as ~20 corrections/s for minutes.
+   */
+  private correctionLoop (now: number): boolean {
+    return this.corrections.filter(t => now - t <= CORRECTION_WINDOW_MS).length >= CORRECTION_LOOP_N
+  }
+
+  /** Walk to the centre of the current cell (away from whatever the box is clipping). */
+  private async recentre (): Promise<void> {
+    const bot = this.bot
+    this.halt()
+    const c = bot.entity.position.floored()
+    const end = Date.now() + 1500
+    while (Date.now() < end) {
+      const p = bot.entity.position
+      const dx = c.x + 0.5 - p.x
+      const dz = c.z + 0.5 - p.z
+      if (Math.hypot(dx, dz) < 0.12) break
+      await bot.look(Math.atan2(-dx, -dz), 0, true)
+      bot.setControlState('forward', true)
+      bot.setControlState('sneak', true)
+      await sleep(50)
+    }
+    bot.clearControlStates()
+    this.corrections = []
+    await sleep(250)
+  }
+
+  recent (): NavResult[] { return this.history.slice(-10) }
+
+  budgetMs (goal: NavGoal): number {
+    const p = this.pos()
+    const under = undergroundTarget(liveView(this.bot), goal, p)
+    if (under) return excavationBudgetMs(excavationDistance([Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])], under))
+    const d = goalDistance(goal, p)
+    return navTimeoutMs(Number.isFinite(d) ? Math.min(2000, d) : 64)
+  }
+
+  stop (): void {
+    this.active?.abort()
+    this.halt()
+  }
+
+  private halt (): void {
+    try { this.bot.pathfinder.setGoal(null) } catch { /* ignore */ }
+    this.bot.clearControlStates()
+  }
+
+  private pos (): V3 {
+    const p = this.bot.entity.position
+    return [p.x, p.y, p.z]
+  }
+
+  private setMovements (profile: NavProfile, dry: boolean): void {
+    const k = `${profile}:${dry ? 'dry' : 'std'}`
+    let m = this.movements.get(k)
+    if (!m) { m = movementsFor(this.bot, profile, dry); this.movements.set(k, m) }
+    this.bot.pathfinder.setMovements(m)
+  }
+
+  private toPfGoal (goal: NavGoal): PfGoal {
+    const t = goal.target
+    const v = Array.isArray(t) ? t : null
+    switch (goal.kind) {
+      case 'block': return new goals.GoalBlock(v![0], v![1], v![2])
+      case 'near': return new goals.GoalNear(v![0], v![1], v![2], goal.range ?? 1)
+      case 'xz': return new goals.GoalNearXZ(v![0], v![2], goal.range ?? 2)
+      case 'y': return new goals.GoalY(t as number)
+      case 'reach': return new goals.GoalLookAtBlock(new Vec3(v![0], v![1], v![2]) as never, this.bot.world, { reach: goal.range ?? 4.5 })
+      case 'away': return new goals.GoalInvert(new goals.GoalNear(v![0], v![1], v![2], goal.range ?? 16))
+      case 'entity': {
+        const e = this.bot.entities[t as number]
+        if (!e) throw new Error(`entity ${String(t)} not tracked`)
+        return new goals.GoalFollow(e, goal.range ?? 2)
+      }
+    }
+  }
+
+  async goto (goal: NavGoal, o: GotoOptions): Promise<NavResult> {
+    if (this.active) this.stop()
+    const t0 = Date.now()
+    const startPos = this.pos()
+    const entityPos = (): V3 | undefined => {
+      if (goal.kind !== 'entity') return undefined
+      const e = this.bot.entities[goal.target as number]
+      return e ? [e.position.x, e.position.y, e.position.z] : undefined
+    }
+    const diag: NavDiag = {
+      goal, profile: o.profile, startPos: startPos.map(r1) as V3, lastPos: startPos.map(r1) as V3,
+      startDist: r1(goalDistance(goal, startPos, entityPos())), endDist: 0,
+      legs: 0, replans: 0, partial: false, pathStatuses: {}, resets: {},
+      stuckEvents: 0, unstickAttempts: 0, blocksTravelled: 0, lastPath: [],
+      strategy: 'pathfinder',
+      water: { msInWater: 0, exitAttempts: 0, exits: 0, dryReplans: 0, longestSwim: 0 },
+    }
+    this.bus.emit('nav_start', { goal, profile: o.profile, startDist: diag.startDist }, 'debug')
+
+    let result: NavResult | null = null
+    try {
+      const under = undergroundTarget(liveView(this.bot), goal, startPos)
+      if (under) {
+        diag.strategy = 'excavate'
+        result = await this.runExcavation(goal, under, diag, o, t0)
+      } else {
+        const legs: NavGoal[] = []
+        if (Array.isArray(goal.target) && goal.kind !== 'away') {
+          for (const [x, z] of planWaypoints(startPos, goal.target)) legs.push({ kind: 'xz', target: [x, 0, z], range: 6 })
+        }
+        legs.push(goal)
+        for (const leg of legs) {
+          diag.legs++
+          const deadline = t0 + o.timeoutMs
+          const fail = await this.runLeg(leg, goal, diag, deadline, o, entityPos)
+          if (fail) {
+            result = { ok: false, class: fail, ms: Date.now() - t0, detail: diag }
+            break
+          }
+        }
+        if (!result) {
+          const d = goalDistance(goal, this.pos(), entityPos())
+          result = { ok: true, dist: r1(d), ms: Date.now() - t0, detail: diag }
+        }
+      }
+    } catch (err) {
+      diag.reason = `exception: ${(err as Error).message}`
+      result = { ok: false, class: 'NAV_UNREACHABLE', ms: Date.now() - t0, detail: diag }
+    } finally {
+      this.halt()
+      this.active = null
+    }
+    diag.lastPos = this.pos().map(r1) as V3
+    diag.endDist = r1(goalDistance(goal, this.pos(), entityPos()))
+    diag.blocksTravelled = r1(diag.blocksTravelled)
+    if (diag.water) diag.water.msInWater = Math.round(diag.water.msInWater)
+    this.history.push(result)
+    if (this.history.length > 20) this.history.shift()
+    this.bus.emit('nav_end', {
+      ok: result.ok, class: result.ok ? null : result.class, ms: result.ms, goal, profile: o.profile,
+      startDist: diag.startDist, endDist: diag.endDist, legs: diag.legs, replans: diag.replans,
+      stuckEvents: diag.stuckEvents, unstickAttempts: diag.unstickAttempts, blocksTravelled: diag.blocksTravelled,
+      partial: diag.partial, pathStatuses: diag.pathStatuses, resets: diag.resets, reason: diag.reason ?? null,
+      strategy: diag.strategy, water: diag.water, excavation: diag.excavation ?? null, surfacings: diag.surfacings ?? 0,
+    }, result.ok ? 'debug' : 'warn')
+    return result
+  }
+
+  /** Deterministic controlled excavation (staircase / verified dig-down / tunnel) to an underground target. */
+  private async runExcavation (goal: NavGoal, t: ExcavationTarget, diag: NavDiag, o: GotoOptions, t0: number): Promise<NavResult> {
+    let aborted = false
+    this.active = { abort: () => { aborted = true } }
+    this.halt()
+    // Never start digging from water or its edge: walk to a dry cell first.
+    const p = this.pos()
+    const start = dryStart(liveView(this.bot), p)
+    if (start) {
+      this.bus.emit('water_event', { kind: 'excavation_relocate', from: p.map(Math.round), to: start }, 'info')
+      this.setMovements(o.profile, false)
+      const g = new goals.GoalBlock(start[0], start[1], start[2])
+      this.bot.pathfinder.setGoal(g)
+      const end = Math.min(Date.now() + 30_000, t0 + o.timeoutMs)
+      while (Date.now() < end && !aborted && !o.signal.aborted && !g.isEnd(this.bot.entity.position.floored() as never)) await sleep(SAMPLE_MS)
+      this.halt()
+      if (!g.isEnd(this.bot.entity.position.floored() as never)) {
+        diag.reason = 'could not reach a dry excavation start'
+        return { ok: false, class: aborted || o.signal.aborted ? 'CANCELLED' : 'NAV_HAZARD', ms: Date.now() - t0, detail: diag }
+      }
+    }
+    const range = Math.max(goal.kind === 'y' ? 0 : 0.9, goal.range ?? 0)
+    const done = (feet: V3) => goal.kind === 'y' ? feet[1] === t.y : goalDistance(goal, this.pos()) <= range
+    let prev = this.pos()
+    const r = await this.excavator.run(t, done, {
+      signal: o.signal, deadline: t0 + o.timeoutMs,
+      isAborted: () => aborted || o.signal.aborted,
+      onProgress: () => {
+        const p = this.pos()
+        diag.blocksTravelled += Math.hypot(p[0] - prev[0], p[1] - prev[1], p[2] - prev[2])
+        prev = p
+        o.onProgress?.(goalDistance(goal, p))
+      },
+    })
+    diag.legs = 1
+    diag.excavation = { steps: r.steps, dug: r.dug, falls: r.falls, byKind: r.byKind, entry: r.entry, lastBlocked: r.lastBlocked }
+    diag.lastPath = r.path.slice(-24)
+    if (r.ok) return { ok: true, dist: r1(goalDistance(goal, this.pos())), ms: Date.now() - t0, detail: diag }
+    diag.reason = r.reason
+    if (r.missing) diag.missing = r.missing
+    return { ok: false, class: r.cls ?? 'NAV_UNREACHABLE', ms: Date.now() - t0, detail: diag }
+  }
+
+  private feetInWater (): boolean {
+    return Boolean((this.bot.entity as { isInWater?: boolean }).isInWater)
+  }
+
+  private headInWater (): boolean {
+    const b = this.bot.blockAt(this.bot.entity.position.offset(0, 1.62, 0), false)
+    return !!b && (WATER_LIKE.has(b.name) || (b as unknown as { getProperties (): Record<string, unknown> }).getProperties?.().waterlogged === true)
+  }
+
+  /** Returns null on success, or the failure class. */
+  private async runLeg (leg: NavGoal, finalGoal: NavGoal, diag: NavDiag, deadline: number, o: GotoOptions, entityPos: () => V3 | undefined): Promise<NavFailClass | null> {
+    const bot = this.bot
+    const pfGoal = this.toPfGoal(leg)
+    const isEnd = () => pfGoal.isEnd(bot.entity.position.floored() as never)
+    if (isEnd()) return null
+    const water = diag.water!
+
+    let dry = false
+    this.setMovements(o.profile, dry)
+    const em = bot as unknown as EventEmitter
+    let reached = false
+    let emptyNoPath = 0
+    let lastUpdate = Date.now()
+    let aborted = false
+    let wantDryReplan = false
+    const isWater = (p: V3) => { const b = bot.blockAt(new Vec3(p[0], p[1], p[2]), false); return !!b && WATER_LIKE.has(b.name) }
+    const onReached = (g: unknown) => { if (g === pfGoal) reached = true }
+    const onUpdate = (r: { status: string; path: { x: number; y: number; z: number }[] }) => {
+      lastUpdate = Date.now()
+      diag.pathStatuses[r.status] = (diag.pathStatuses[r.status] ?? 0) + 1
+      if (r.path.length) {
+        const path = r.path.map(p => [p.x, p.y, p.z] as V3)
+        diag.lastPath = path.slice(0, 24)
+        const swim = longestWaterRun(path, isWater)
+        water.longestSwim = Math.max(water.longestSwim, swim)
+        if (swim > LONG_SWIM_NODES && !dry) wantDryReplan = true
+      }
+      if (r.status === 'noPath' || r.status === 'timeout') {
+        if (r.path.length === 0) emptyNoPath++
+        else diag.partial = true
+      } else if (r.status === 'success') {
+        emptyNoPath = 0
+      }
+    }
+    const onReset = (reason: string) => { diag.resets[reason] = (diag.resets[reason] ?? 0) + 1 }
+    em.on('goal_reached', onReached)
+    em.on('path_update', onUpdate)
+    em.on('path_reset', onReset)
+    this.active = { abort: () => { aborted = true } }
+
+    const stuck = new StuckDetector(this.stuckOpts)
+    const legDist = () => goalDistance(leg, this.pos(), leg === finalGoal ? entityPos() : undefined)
+    let best = legDist()
+    stuck.reset(Date.now(), best)
+    let replansSinceProgress = 0
+    let idleSince: number | null = null
+    let prev = this.pos()
+    let lastSample = Date.now()
+    let submergedSince: number | null = null
+    let waterStallSince: number | null = null
+    const setGoal = () => bot.pathfinder.setGoal(pfGoal, leg.kind === 'entity')
+
+    try {
+      setGoal()
+      for (;;) {
+        await sleep(SAMPLE_MS)
+        const now = Date.now()
+        const pos = this.pos()
+        diag.blocksTravelled += Math.hypot(pos[0] - prev[0], pos[1] - prev[1], pos[2] - prev[2])
+        prev = pos
+        const inWater = this.feetInWater()
+        if (inWater) water.msInWater += now - lastSample
+        lastSample = now
+
+        if (reached || isEnd()) return null
+        if (aborted || o.signal.aborted) { diag.reason = 'cancelled'; return 'CANCELLED' }
+        if (now > deadline) { diag.reason = inWater ? 'nav timeout (in water)' : 'nav timeout'; return 'SKILL_TIMEOUT' }
+        const feet = bot.blockAt(bot.entity.position, false)
+        if (feet?.name === 'lava') { diag.reason = 'in lava'; return 'NAV_HAZARD' }
+
+        // ── air: surface proactively, long before drowning ───────────────
+        const headIn = this.headInWater()
+        submergedSince = headIn ? (submergedSince ?? now) : null
+        if (headIn && (now - submergedSince! >= MAX_SUBMERGED_MS || ownAir(bot) < LOW_AIR)) {
+          diag.surfacings = (diag.surfacings ?? 0) + 1
+          if (diag.surfacings > MAX_SURFACINGS) { diag.reason = 'repeatedly out of air'; return 'NAV_HAZARD' }
+          const ok = await this.surface()
+          if (!ok) { diag.reason = 'cannot surface (no air above)'; return 'NAV_HAZARD' }
+          submergedSince = null
+          diag.replans++
+          stuck.reset(Date.now(), legDist())
+          setGoal()
+          continue
+        }
+
+        const d = legDist()
+        if (d < best - 0.5) {
+          best = d
+          replansSinceProgress = 0
+          waterStallSince = null
+          o.onProgress?.(goalDistance(finalGoal, pos, entityPos()))
+        }
+
+        // ── long swims: replan once with a strong dry-land preference ─────
+        if (wantDryReplan && !dry) {
+          dry = true
+          wantDryReplan = false
+          water.dryReplans++
+          this.bus.emit('water_event', { kind: 'dry_replan', longestSwim: water.longestSwim, pos: pos.map(Math.round) }, 'info')
+          this.setMovements(o.profile, true)
+          diag.replans++
+          setGoal()
+          continue
+        }
+
+        // ── stuck in water: find and climb out at a real shoreline exit ───
+        waterStallSince = inWater ? (waterStallSince ?? now) : null
+        if (waterStallSince !== null && (now - waterStallSince >= WATER_STALL_MS || emptyNoPath > 0)) {
+          if (water.exitAttempts >= MAX_EXIT_ATTEMPTS) { diag.reason = 'water exit failed repeatedly'; return 'NAV_HAZARD' }
+          water.exitAttempts++
+          const exited = await this.exitWater(o, () => aborted)
+          if (exited) water.exits++
+          waterStallSince = null
+          emptyNoPath = 0
+          stuck.reset(Date.now(), legDist())
+          best = legDist()
+          diag.replans++
+          setGoal()
+          continue
+        }
+
+        if (emptyNoPath >= MAX_EMPTY_NOPATH) { diag.reason = inWater ? 'no path from water' : 'no path (search exhausted)'; return 'NAV_UNREACHABLE' }
+
+        const busy = bot.pathfinder.isMining() || bot.pathfinder.isBuilding()
+        const moving = bot.pathfinder.isMoving() || busy
+        if (!moving) {
+          idleSince ??= now
+          if (now - idleSince >= IDLE_REPLAN_MS && now - lastUpdate >= IDLE_REPLAN_MS) {
+            // Pathfinder finished a partial path (or never found one) without reaching the goal.
+            if (replansSinceProgress >= MAX_REPLANS_WITHOUT_PROGRESS) { diag.reason = 'replans exhausted without progress'; return 'NAV_UNREACHABLE' }
+            diag.replans++
+            replansSinceProgress++
+            idleSince = null
+            setGoal()
+          }
+          continue
+        }
+        idleSince = null
+
+        if (this.correctionLoop(now)) {
+          diag.correctionLoops = (diag.correctionLoops ?? 0) + 1
+          this.bus.emit('stuck_detected', { reason: 'correction_loop', pos: pos.map(Math.round), dist: r1(d), attempt: diag.correctionLoops, inWater }, 'warn')
+          if (diag.correctionLoops > MAX_CORRECTION_LOOPS) { diag.reason = 'server position-correction loop'; return 'NAV_STUCK' }
+          await this.recentre()
+          diag.replans++
+          stuck.reset(Date.now(), legDist())
+          setGoal()
+          continue
+        }
+
+        const why = stuck.sample(now, pos, d, busy)
+        if (why) {
+          diag.stuckEvents++
+          this.bus.emit('stuck_detected', { reason: why, pos: pos.map(Math.round), dist: r1(d), attempt: diag.unstickAttempts + 1, digging: bot.pathfinder.isMining(), inWater }, 'warn')
+          if (diag.unstickAttempts >= MAX_UNSTICK) { diag.reason = `stuck: ${why}${inWater ? ' (in water)' : ''}`; return 'NAV_STUCK' }
+          diag.unstickAttempts++
+          await this.unstick(diag.unstickAttempts)
+          diag.replans++
+          stuck.reset(Date.now(), legDist())
+          best = legDist()
+          setGoal()
+        }
+      }
+    } finally {
+      em.removeListener('goal_reached', onReached)
+      em.removeListener('path_update', onUpdate)
+      em.removeListener('path_reset', onReset)
+      this.setMovements(o.profile, false)
+    }
+  }
+
+  /**
+   * Get the head out of the water and refill air. Swims straight up when open air
+   * is above; under an overhang or ceiling, follows the shortest route through
+   * connected water to open air; as a last resort digs the block overhead.
+   * False if the head never clears the water.
+   */
+  private async surface (): Promise<boolean> {
+    const bot = this.bot
+    const p0 = bot.entity.position
+    this.bus.emit('interrupt_start', { reason: 'low_air', air: ownAir(bot), pos: [p0.x, p0.y, p0.z].map(Math.round) }, 'warn')
+    this.halt()
+    const t0 = Date.now()
+    let cleared = false
+    const route = routeToAir(liveView(bot), [p0.x, p0.y + 1.62, p0.z])
+    let wp = 0
+    let dug = false
+    while (Date.now() - t0 < SURFACE_MAX_MS) {
+      // Re-assert every tick: a pathfinder dig aborted by halt() clears control states asynchronously.
+      bot.setControlState('jump', true)
+      if (!cleared && route && route.length > 1 && wp < route.length) {
+        // Steer the head toward the next water cell on the route to open air.
+        const c = route[wp]!
+        const p = bot.entity.position
+        const dx = c[0] + 0.5 - p.x
+        const dz = c[2] + 0.5 - p.z
+        if (Math.hypot(dx, dz) < 0.35 && p.y + 1.62 >= c[1]) wp++
+        else {
+          await bot.look(Math.atan2(-dx, -dz), 0, true)
+          bot.setControlState('forward', Math.hypot(dx, dz) >= 0.35)
+        }
+      } else if (!cleared && !route && !dug && Date.now() - t0 > 1500) {
+        // No water route to air: dig the ceiling if it is quick to break.
+        dug = true
+        const above = bot.blockAt(bot.entity.position.offset(0, 2.2, 0), false)
+        if (above && above.boundingBox === 'block' && above.diggable && bot.digTime(above) < 2500 && !/sand|gravel/.test(above.name)) {
+          await withTimeout(bot.dig(above, true), bot.digTime(above) + 3000).catch(() => {})
+        }
+      }
+      await sleep(150)
+      if (!this.headInWater()) { cleared = true; bot.setControlState('forward', false) }
+      if (cleared && ownAir(bot) >= 19) break
+    }
+    bot.clearControlStates()
+    this.bus.emit('interrupt_end', { reason: 'low_air', air: ownAir(bot), ms: Date.now() - t0, cleared, route: route ? route.length : null }, 'info')
+    return cleared
+  }
+
+  /**
+   * Climb out at the nearest real shoreline exit: flush exits first, then ledges.
+   * Swims to the surface cell beside the exit (pathfinder, surface-only water model),
+   * digs a ledge's lip while holding the surface, then jumps out with plain controls.
+   */
+  private async exitWater (o: GotoOptions, isAborted: () => boolean): Promise<boolean> {
+    const bot = this.bot
+    const p = bot.entity.position
+    const exits = findWaterExits(liveView(bot), [p.x, p.y, p.z], 12)
+    this.bus.emit('water_event', { kind: 'exit_attempt', pos: [p.x, p.y, p.z].map(Math.round), candidates: exits.length, best: exits[0] ?? null }, 'info')
+    const stop = () => isAborted() || o.signal.aborted
+    for (const ex of exits.slice(0, 3)) {
+      if (stop()) break
+      const approach = new goals.GoalXZ(ex.from[0], ex.from[2])
+      bot.pathfinder.setGoal(approach)
+      const end = Date.now() + 12_000
+      while (Date.now() < end && !stop() && !approach.isEnd(bot.entity.position.floored() as never)) await sleep(SAMPLE_MS)
+      this.halt()
+      if (!approach.isEnd(bot.entity.position.floored() as never)) continue
+      const [sx, sy, sz] = ex.stand
+      const tx = sx + 0.5
+      const tz = sz + 0.5
+      const face = () => bot.look(Math.atan2(-(tx - bot.entity.position.x), -(tz - bot.entity.position.z)), 0, true)
+      if (ex.kind === 'ledge') {
+        for (let tries = 0; tries < 3; tries++) {
+          const lip = bot.blockAt(new Vec3(sx, sy, sz), false)
+          if (!lip || lip.boundingBox === 'empty') break
+          bot.setControlState('jump', true)
+          await withTimeout(bot.dig(lip, true), bot.digTime(lip) * 2 + 3000).catch(() => { try { bot.stopDigging() } catch { /* ignore */ } })
+        }
+        const lip = bot.blockAt(new Vec3(sx, sy, sz), false)
+        if (lip && lip.boundingBox !== 'empty') { bot.clearControlStates(); continue }
+      }
+      const until = Date.now() + 3000
+      while (Date.now() < until && !stop()) {
+        await face()
+        bot.setControlState('forward', true)
+        bot.setControlState('jump', true)
+        await sleep(100)
+        const f = bot.entity.position.floored()
+        if (bot.entity.onGround && !this.feetInWater() && f.y >= sy) break
+      }
+      bot.clearControlStates()
+      if (bot.entity.onGround && !this.feetInWater()) {
+        this.bus.emit('water_event', { kind: 'exit_ok', exit: ex.kind, stand: ex.stand }, 'info')
+        return true
+      }
+    }
+    this.bus.emit('water_event', { kind: 'exit_failed', candidates: exits.length }, 'warn')
+    return false
+  }
+
+  /** Built-in unstick sequence (architecture §10): jump, step back, dig at head height. */
+  private async unstick (attempt: number): Promise<void> {
+    const bot = this.bot
+    this.halt()
+    if (attempt === 1) {
+      bot.setControlState('jump', true)
+      bot.setControlState('forward', true)
+      await sleep(700)
+    } else {
+      bot.setControlState('back', true)
+      bot.setControlState('jump', true)
+      await sleep(900)
+      bot.clearControlStates()
+      const yaw = bot.entity.yaw
+      const head = bot.entity.position.offset(-Math.sin(yaw), 1.6, -Math.cos(yaw)).floored()
+      const b = bot.blockAt(head, false)
+      if (b && b.boundingBox === 'block' && b.diggable && !/lava|water|bedrock/.test(b.name) && bot.canDigBlock(b)) {
+        await withTimeout(bot.dig(b, true), 6000).catch(() => {})
+      }
+    }
+    bot.clearControlStates()
+  }
+}
+
+function r1 (v: number): number { return Math.round(v * 10) / 10 }
+function sleep (ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)) }
+function withTimeout<T> (p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const h = setTimeout(() => reject(new Error('timeout')), ms)
+    p.then(v => { clearTimeout(h); resolve(v) }, e => { clearTimeout(h); reject(e) })
+  })
+}

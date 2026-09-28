@@ -1,0 +1,13 @@
+node_modules/
+.env
+dist/
+coverage/
+*.log
+runs/*
+!runs/.gitkeep
+worlds/
+*.mp4
+.cache/
+.scratch/
+versions/
+graphify-out/
