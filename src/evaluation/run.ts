@@ -2,9 +2,11 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { BotResultS, type BotConfig, type BotResult, type GroundTruth, type Outcome, type RunSummary, type Scenario } from '../schema/index.js'
-import { parseInventoryData, parseServerLine } from './groundtruth.js'
+import { netherReadyInventory, parseInventoryData, parseServerLine } from './groundtruth.js'
+import { resolveJava, type JavaRuntime } from './java.js'
 import { terminate, waitExit, type ProcessRegistry } from './procs.js'
-import { MC_VERSION, ServerProcess } from './server.js'
+import { MC_VERSION } from '../version.js'
+import { ServerProcess } from './server.js'
 
 export const ROOT = resolve(new URL('../..', import.meta.url).pathname)
 export const JAR = join(ROOT, '.cache', `server-${MC_VERSION}.jar`)
@@ -25,6 +27,8 @@ export type RunOptions = {
   keepWorld?: boolean
   codeRev: { rev: string; dirty: boolean }
   registry: ProcessRegistry
+  /** Server Java runtime (resolved once per batch); resolved here if absent. */
+  java?: JavaRuntime
   /** Test hooks: replace the java server and/or the bot process. */
   serverCommand?: { cmd: string; args: string[] }
   botCommand?: { cmd: string; args: string[] }
@@ -34,14 +38,25 @@ export type RunOptions = {
   fixture?: FixtureName
 }
 
-/** Fixture setups: evaluator-only console commands run when the bot joins. */
-export type FixtureName = 'kit' | 'kit2'
-export const FIXTURES: Record<FixtureName, (user: string) => string[]> = {
+/**
+ * Fixture setups (evaluation.md §1): evaluator-only console commands run when the
+ * bot joins, plus optional server-property overrides. Fixture batches are labeled
+ * and never scored.
+ */
+export type FixtureName = 'kit' | 'kit2' | 'excavation'
+export type Fixture = { commands: (user: string) => string[]; properties?: Record<string, string> }
+export const FIXTURES: Record<FixtureName, Fixture> = {
   // Milestone-A-like navigation kit: a pickaxe for digging, blocks for scaffolding.
-  kit: user => [`give ${user} minecraft:stone_pickaxe 1`, `give ${user} minecraft:dirt 32`],
-  // Supplementary: `kit` plus a spare stone pickaxe (131 uses each), to separate excavation
-  // reliability from single-tool durability on ~90-block descents.
-  kit2: user => [`give ${user} minecraft:stone_pickaxe 2`, `give ${user} minecraft:dirt 32`],
+  kit: { commands: user => [`give ${user} minecraft:stone_pickaxe 1`, `give ${user} minecraft:dirt 32`] },
+  // Supplementary: `kit` plus a spare stone pickaxe (131 uses each).
+  kit2: { commands: user => [`give ${user} minecraft:stone_pickaxe 2`, `give ${user} minecraft:dirt 32`] },
+  // Excavation reliability in isolation: tools that outlast every underground trial
+  // (2 iron pickaxes, 250 uses each) and no hostile mobs (peaceful), so tool depletion
+  // and combat cannot mask navigation failures. Falls, lava, water and suffocation still apply.
+  excavation: {
+    commands: user => [`give ${user} minecraft:iron_pickaxe 2`, `give ${user} minecraft:iron_shovel 1`, `give ${user} minecraft:dirt 64`],
+    properties: { difficulty: 'peaceful' },
+  },
 }
 
 export const REQUIRED_ARTIFACTS = ['events.jsonl', 'trace.jsonl', 'state.jsonl', 'bot_result.json', 'bot.log', 'server.log', 'ground_truth.jsonl', join('private', 'seed.txt')]
@@ -57,6 +72,9 @@ export function botEnv (cfg: BotConfig, lingerMs: number): NodeJS.ProcessEnv {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** A poll gap longer than this is a host suspension, not evaluator work. */
+export const HOST_SUSPEND_MS = 20_000
 
 export async function runOne (o: RunOptions): Promise<RunSummary> {
   const t0 = Date.now()
@@ -82,8 +100,13 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
   let gtNote = ''
   let bot: ChildProcess | null = null
   let timedOut = false
+  let hostSuspendedMs = 0
 
-  const server = new ServerProcess({ worldDir, port: o.port, seed: o.seed, jarPath: JAR, command: o.serverCommand, readyTimeoutMs: o.serverReadyTimeoutMs }, o.registry)
+  const server = new ServerProcess({
+    worldDir, port: o.port, seed: o.seed, jarPath: JAR, command: o.serverCommand, readyTimeoutMs: o.serverReadyTimeoutMs,
+    javaBin: o.serverCommand ? undefined : (o.java ?? resolveJava(ROOT)).bin,
+    properties: o.fixture ? FIXTURES[o.fixture].properties : undefined,
+  }, o.registry)
   server.on('line', (line: string) => {
     const g = parseServerLine(line, username, since())
     if (!g) return
@@ -91,8 +114,9 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     if (g.kind === 'join' && botConnectS === null) {
       botConnectS = since()
       if (o.fixture) {
-        for (const c of FIXTURES[o.fixture](username)) server.command(c)
-        recordGt({ t: since(), kind: 'fixture', data: { name: o.fixture, commands: FIXTURES[o.fixture](username) } })
+        const f = FIXTURES[o.fixture]
+        for (const c of f.commands(username)) server.command(c)
+        recordGt({ t: since(), kind: 'fixture', data: { name: o.fixture, commands: f.commands(username), properties: f.properties ?? {} } })
       }
     }
   })
@@ -122,7 +146,16 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     let serverDied = false
     server.once('exit', () => { serverDied = true })
     // Wait for: bot result written, bot exit, server death, or the wall clock.
+    // A gap in this 500 ms poll loop means the host itself was suspended (laptop sleep):
+    // every process froze, and the bot's connection usually times out on wake.
+    let lastPoll = Date.now()
     for (;;) {
+      const gap = Date.now() - lastPoll
+      if (gap > HOST_SUSPEND_MS) {
+        hostSuspendedMs += gap
+        recordGt({ t: since(), kind: 'server_error', data: { msg: `evaluator poll gap ${Math.round(gap / 1000)}s: host suspended` } })
+      }
+      lastPoll = Date.now()
       if (existsSync(resultPath)) break
       if (bot.exitCode !== null || bot.signalCode !== null) break
       if (serverDied) break
@@ -183,10 +216,17 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     }
   }
 
+  // A run the host slept through is an infrastructure failure, whatever the bot reported.
+  if (hostSuspendedMs > 0 && outcome !== 'goal_reached') {
+    outcome = 'infra_error'
+    outcomeReason = `host suspended ${Math.round(hostSuspendedMs / 1000)}s during the run (${outcomeReason})`
+  }
   const deathsGt = gt.filter(g => g.kind === 'death')
   const advancements = gt.filter(g => g.kind === 'advancement').map(g => String(g.data.name))
   let verified: boolean | null = null
   if (o.target === 'M0' && gtInventory) verified = (gtInventory.crafting_table ?? 0) >= 1 === (outcome === 'goal_reached')
+  // A run that claims nether_ready must hold it on the server; a run that does not claim it makes no claim to check.
+  if (o.target === 'A' && gtInventory) verified = outcome === 'goal_reached' ? netherReadyInventory(gtInventory) : true
   if (o.scenario === 'navbench') verified = gtInventory ? true : null
 
   const failures = br?.failures ?? []

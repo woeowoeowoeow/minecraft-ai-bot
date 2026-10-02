@@ -2,7 +2,10 @@
 import type { Bot } from 'mineflayer'
 import type { Block } from 'prismarine-block'
 import type { Item } from 'prismarine-item'
+import { Vec3 } from 'vec3'
+import { equipFor } from '../nav/tools.js'
 import { sleep } from './runner.js'
+import { SkillFailure } from './types.js'
 
 export function withTimeout<T> (p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -11,20 +14,10 @@ export function withTimeout<T> (p: Promise<T>, ms: number, what: string): Promis
   })
 }
 
-/** Fastest tool in inventory for this block (null = hand). */
-export function bestTool (bot: Bot, block: Block): Item | null {
-  let best: Item | null = null
-  let fastest = block.digTime(null, false, false, false, [], bot.entity.effects as never)
-  for (const it of bot.inventory.items()) {
-    const t = block.digTime(it.type, false, false, false, [], bot.entity.effects as never)
-    if (t < fastest) { fastest = t; best = it }
-  }
-  return best
-}
+export { bestTool, equipFor } from '../nav/tools.js'
 
 export async function dig (bot: Bot, block: Block, signal: AbortSignal): Promise<void> {
-  const tool = bestTool(bot, block)
-  if (tool) await withTimeout(bot.equip(tool, 'hand'), 3000, 'equip')
+  const tool = await equipFor(bot, block)
   // Digging while airborne is 5× slower (vanilla rule): settle first, e.g. at the end of a path.
   bot.clearControlStates()
   await waitFor(() => bot.entity.onGround, 1500, signal)
@@ -40,6 +33,123 @@ export async function dig (bot: Bot, block: Block, signal: AbortSignal): Promise
   } finally {
     signal.removeEventListener('abort', onAbort)
   }
+}
+
+export function findItem (bot: Bot, name: string): Item | null {
+  return bot.inventory.items().find(i => i.name === name) ?? null
+}
+
+export async function equipItem (bot: Bot, name: string, dest: 'hand' | 'off-hand' | 'head' | 'torso' | 'legs' | 'feet' = 'hand'): Promise<Item> {
+  const it = findItem(bot, name)
+  if (!it) throw new Error(`no ${name} in inventory`)
+  await withTimeout(bot.equip(it, dest), 3000, `equip ${name}`)
+  return it
+}
+
+const FACES: [number, number, number][] = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]
+
+/**
+ * Cells near the bot where a block can be placed: replaceable (air, plants),
+ * not overlapping the bot, with a solid neighbour to place against, within reach,
+ * not in or next to lava or water. Nearest first, ties broken by position.
+ */
+export function placementSpots (bot: Bot, radius = 2): { pos: Vec3; ref: Vec3; face: Vec3 }[] {
+  const me = bot.entity.position
+  const feet = me.floored()
+  const out: { pos: Vec3; ref: Vec3; face: Vec3; d: number }[] = []
+  const replaceable = (b: Block | null) => !!b && (b.name === 'air' || b.name === 'cave_air' || b.name === 'grass' || b.name === 'tall_grass' || b.name === 'fern' || b.name === 'snow')
+  // Lava beside a spot ignites wooden blocks; water beside a table or furnace is harmless
+  // (dev batch 11 r04: 6 bucket crafts failed with "no place" at a water edge).
+  const liquid = (b: Block | null) => !!b && b.name === 'lava'
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (Math.abs(dx) <= 0 && Math.abs(dz) <= 0) continue // the bot's own column
+        const pos = feet.offset(dx, dy, dz)
+        if (!replaceable(bot.blockAt(pos, false))) continue
+        if (FACES.some(([x, y, z]) => liquid(bot.blockAt(pos.offset(x, y, z), false)))) continue
+        const center = pos.offset(0.5, 0.5, 0.5)
+        const d = center.distanceTo(me.offset(0, 1.62, 0))
+        if (d > 4) continue
+        for (const [x, y, z] of FACES) {
+          const ref = pos.offset(x, y, z)
+          const rb = bot.blockAt(ref, false)
+          if (!rb || rb.boundingBox !== 'block') continue
+          out.push({ pos, ref, face: new Vec3(-x, -y, -z), d: d + (dy !== 0 ? 0.5 : 0) + (y === -1 ? 0 : 0.3) })
+          break
+        }
+      }
+    }
+  }
+  out.sort((a, b) => a.d - b.d || a.pos.x - b.pos.x || a.pos.z - b.pos.z || a.pos.y - b.pos.y)
+  return out.map(({ pos, ref, face }) => ({ pos, ref, face }))
+}
+
+/**
+ * No free cell around the bot (a 1×2 pocket such as the sealed dig-in, dev batch 6 r02):
+ * dig one head-level wall block whose other neighbours are all solid, so the niche opens
+ * nothing and the placed block fills it again. False if no wall qualifies.
+ */
+async function makeRoom (bot: Bot, signal: AbortSignal): Promise<boolean> {
+  const feet = bot.entity.position.floored()
+  const cands: { b: import('prismarine-block').Block; closed: boolean }[] = []
+  for (const dy of [1, 0]) {
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const c = feet.offset(dx, dy, dz)
+      const b = bot.blockAt(c, false)
+      if (!b || b.boundingBox !== 'block' || !b.diggable || /lava|water|chest|furnace|crafting_table|bedrock/.test(b.name)) continue
+      const floor = bot.blockAt(c.offset(0, -1, 0), false)
+      if (!floor || floor.boundingBox !== 'block') continue
+      let liquid = false
+      const closed = FACES.every(([x, y, z]) => {
+        const n = c.offset(x, y, z)
+        if (n.equals(feet.offset(0, dy, 0))) return true
+        const nb = bot.blockAt(n, false)
+        if (nb && /lava|water/.test(nb.name)) liquid = true
+        return !!nb && nb.boundingBox === 'block'
+      })
+      if (liquid) continue
+      let ms = b.digTime(null, false, false, false, [], bot.entity.effects as never)
+      for (const it of bot.inventory.items()) ms = Math.min(ms, b.digTime(it.type, false, false, false, [], bot.entity.effects as never))
+      if (ms > 3000) continue
+      cands.push({ b, closed })
+    }
+  }
+  // Prefer a closed niche (opens nothing; the placed block seals it again).
+  const pick = cands.find(c => c.closed) ?? cands[0]
+  if (!pick) return false
+  await dig(bot, pick.b, signal)
+  return true
+}
+
+/** No room to place a block: a structured precondition failure (Recovery relocates), not a crash. */
+export class NoRoomError extends SkillFailure {
+  constructor (readonly item: string) { super('PRECONDITION_FAILED', `no place to put ${item}`, { key: `place=${item}` }) }
+}
+
+/** Place `itemName` from inventory next to the bot; returns the placed block's position. */
+export async function placeNear (bot: Bot, itemName: string, signal: AbortSignal): Promise<Vec3> {
+  let spots = placementSpots(bot)
+  if (!spots.length && await makeRoom(bot, signal)) spots = placementSpots(bot)
+  if (!spots.length) throw new NoRoomError(itemName)
+  let lastErr: unknown = null
+  for (const spot of spots.slice(0, 4)) {
+    if (signal.aborted) throw signal.reason
+    await equipItem(bot, itemName, 'hand')
+    bot.clearControlStates()
+    try {
+      await bot.lookAt(spot.ref.offset(0.5 + spot.face.x * 0.5, 0.5 + spot.face.y * 0.5, 0.5 + spot.face.z * 0.5), true)
+      await withTimeout(bot.placeBlock(bot.blockAt(spot.ref, false)!, spot.face), 6000, 'place')
+      const b = bot.blockAt(spot.pos, false)
+      if (b && b.name === itemName) return spot.pos
+    } catch (e) {
+      lastErr = e
+      await sleep(250, signal)
+      const b = bot.blockAt(spot.pos, false)
+      if (b && b.name === itemName) return spot.pos
+    }
+  }
+  throw new Error(`could not place ${itemName}: ${String((lastErr as Error)?.message ?? lastErr)}`)
 }
 
 /** Resolves true when `pred` holds, polling every 100 ms until `ms` passes. */

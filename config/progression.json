@@ -1,3 +1,29 @@
 {
-  "M0": { "logs": 4, "planks": 4 }
+  "mcVersion": "1.16.1",
+  "M0": {
+    "logs": 4,
+    "planks": 4
+  },
+  "later": {
+    "blaze_rods": 7,
+    "ender_pearls": 14,
+    "eyes_of_ender": 14,
+    "beds": 6
+  },
+  "A": {
+    "cookedFood": 10,
+    "cookedFoodTarget": 14,
+    "ironArmor": [
+      "iron_helmet",
+      "iron_boots"
+    ],
+    "ironArmorPieces": 2,
+    "obsidian": 10,
+    "lavaPoolMinSources": 10,
+    "kitPickaxeDurability": 250,
+    "kitSticks": 4,
+    "foodBuffer": 3,
+    "foodBufferSearchSteps": 2,
+    "kitWoodMargin": 4
+  }
 }

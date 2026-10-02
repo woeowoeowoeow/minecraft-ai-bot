@@ -8,6 +8,7 @@ import { Vec3 } from 'vec3'
 import type { EventBus } from '../observer/events.js'
 import type { V3 } from '../schema/index.js'
 import { HARMFUL_FLOOR, liveView, type BlockView, type Cell } from './blocks.js'
+import { equipFor } from './tools.js'
 
 export type ExcavationTarget = { y: number; xz?: [number, number] }
 export type StepKind = 'stair_down' | 'shaft' | 'tunnel' | 'stair_up'
@@ -15,7 +16,9 @@ export type StepKind = 'stair_down' | 'shaft' | 'tunnel' | 'stair_up'
 export type Step = {
   kind: StepKind
   dir: [number, number] | null
-  /** Cells to clear, top to bottom. Already-passable cells are omitted. */
+  /** Cells that must be open for the step, top to bottom. */
+  open: V3[]
+  /** The subset of `open` that is solid at planning time. */
   dig: V3[]
   /** Feet cell after the step (after any short drop). */
   to: V3
@@ -152,7 +155,7 @@ export function planStep (view: BlockView, p: V3, t: ExcavationTarget, visited: 
     const top = cells[0]
     const gravityAbove = top ? view.at(top[0], top[1] + 1, top[2]).gravity : false
     const fall = enterFeetY - toY
-    cands.push({ kind, dir, dig, to, fall, gravityAbove, score: d1 + EXC.digWeight * dig.length + EXC.fallWeight * fall })
+    cands.push({ kind, dir, open: cells, dig, to, fall, gravityAbove, score: d1 + EXC.digWeight * dig.length + EXC.fallWeight * fall })
   }
 
   // Verified dig-down: the block under the feet, landing checked below it.
@@ -203,6 +206,10 @@ export type ExcavationResult = {
   /** Walkable return path: the excavated cells in order (capped). */
   path: V3[]
   lastBlocked?: string
+  /** Cells found solid again after a step's dig pass (falling sand/gravel, or a break the server refused) and re-dug. */
+  refills: number
+  /** Times the bot dropped from a neighbour's lip into its open feet cell before planning. */
+  unperched: number
 }
 
 export type ExcavateOptions = {
@@ -231,7 +238,7 @@ export class Excavator {
   async run (t: ExcavationTarget, done: (feet: V3) => boolean, o: ExcavateOptions): Promise<ExcavationResult> {
     const bot = this.bot
     const entry = this.feet()
-    const res: ExcavationResult = { ok: false, steps: 0, dug: 0, falls: 0, byKind: {}, entry, path: [entry] }
+    const res: ExcavationResult = { ok: false, steps: 0, dug: 0, falls: 0, byKind: {}, entry, path: [entry], refills: 0, unperched: 0 }
     const visited = new Set<string>([key(entry)])
     const maxSteps = o.maxSteps ?? 3 * excavationDistance(entry, t) + 40
     let prevDir: [number, number] | null = null
@@ -256,6 +263,18 @@ export class Excavator {
         res.missing = [{ item: 'wooden_pickaxe', count: 1 }]
         return fail('MISSING_RESOURCE', 'pickaxe broke during excavation')
       }
+      // Perched on a neighbour block's lip (the hitbox overlaps it by millimetres) over an
+      // open feet cell: centring would sneak against the edge forever. Drop in if the
+      // landing is one a planned step would accept; otherwise plan from the lip.
+      if (this.perched()) {
+        const l = landing(liveView(bot), here[0], here[1], here[2], EXC.maxFall)
+        if (!('problem' in l) && res.unperched < 8) {
+          res.unperched++
+          await this.moveTo(here, 0.18, false, o)
+          await this.settle(1500)
+          continue
+        }
+      }
 
       const { step, blocked } = planStep(liveView(bot), here, t, visited, prevDir)
       if (!step) {
@@ -263,7 +282,7 @@ export class Excavator {
         if (c.cls === 'MISSING_RESOURCE') res.missing = [{ item: 'wooden_pickaxe', count: 1 }]
         return fail(c.cls, c.reason)
       }
-      const ok = await this.execute(step, o)
+      const ok = await this.execute(step, o, res)
       if (o.isAborted()) return fail('CANCELLED', 'cancelled')
       const now = this.feet()
       if (!ok || key(now) !== key(step.to)) {
@@ -305,20 +324,35 @@ export class Excavator {
     while (!this.bot.entity.onGround && Date.now() < end) await sleep(50)
   }
 
-  private async execute (step: Step, o: ExcavateOptions): Promise<boolean> {
+  private async execute (step: Step, o: ExcavateOptions, res: ExcavationResult): Promise<boolean> {
     const bot = this.bot
     // A 1×1 drop only works from the cell centre; staircase moves need it too for clean digging.
-    if (!(await this.moveTo(this.feet(), 0.18, false, o))) return false
-    for (const c of step.dig) {
-      for (let refills = 0; ; refills++) {
-        if (o.isAborted()) return false
-        const b = bot.blockAt(new Vec3(...c), false)
-        if (!b || b.boundingBox === 'empty') break
-        if (b.name === 'water' || b.name === 'lava') return false
-        if (refills > 8) return false
-        if (!(await this.dig(b, o))) return false
-        await sleep(step.gravityAbove ? 250 : 50)
+    // (Not when perched over an unsafe drop: the run loop already declined to drop in.)
+    if (!this.perched() && !(await this.moveTo(this.feet(), 0.18, false, o))) return false
+    const solidAt = (c: V3) => { const b = bot.blockAt(new Vec3(...c), false); return !!b && b.boundingBox !== 'empty' }
+    for (let pass = 0; ; pass++) {
+      for (const c of step.open) {
+        for (let refills = 0; ; refills++) {
+          if (o.isAborted()) return false
+          const b = bot.blockAt(new Vec3(...c), false)
+          if (!b || b.boundingBox === 'empty') break
+          if (b.name === 'water' || b.name === 'lava') return false
+          if (refills > 8) return false
+          if (!(await this.dig(b, o))) return false
+          await sleep(step.gravityAbove ? 250 : 50)
+        }
       }
+      // Sand or gravel from above is a falling entity for a few ticks: a cell reads
+      // as air mid-fall and is refilled after the pass; a break the server refused
+      // comes back via the dig acknowledgement (src/bot/protocol-fixes.ts). Let it
+      // settle, then re-verify every cell before moving.
+      const settleEnd = Date.now() + 3000
+      await sleep(100)
+      while (this.fallingOver(step.open) && Date.now() < settleEnd && !o.isAborted()) await sleep(100)
+      const refilled = step.open.filter(solidAt)
+      if (!refilled.length) break
+      if (pass >= 5) return false
+      res.refills += refilled.length
     }
     if (step.kind === 'shaft') {
       return this.waitFeet(step.to, 3000, o)
@@ -328,15 +362,8 @@ export class Excavator {
 
   private async dig (b: import('prismarine-block').Block, o: ExcavateOptions): Promise<boolean> {
     const bot = this.bot
-    let best: import('prismarine-item').Item | null = null
-    let fastest = b.digTime(null, false, false, false, [], bot.entity.effects as never)
-    for (const it of bot.inventory.items()) {
-      const t = b.digTime(it.type, false, false, false, [], bot.entity.effects as never)
-      if (t < fastest) { fastest = t; best = it }
-    }
     try {
-      if (best) await withTimeout(bot.equip(best, 'hand'), 3000)
-      else if (bot.heldItem?.name.endsWith('_pickaxe')) await withTimeout(bot.unequip('hand'), 3000).catch(() => {})
+      await equipFor(bot, b)
       const onAbort = () => { try { bot.stopDigging() } catch { /* ignore */ } }
       o.signal.addEventListener('abort', onAbort, { once: true })
       try {
@@ -349,6 +376,23 @@ export class Excavator {
       try { bot.stopDigging() } catch { /* ignore */ }
       return false
     }
+  }
+
+  /** Standing, but the feet cell has no floor: supported by the edge of a neighbouring block. */
+  private perched (): boolean {
+    const f = this.feet()
+    const below = this.bot.blockAt(new Vec3(f[0], f[1] - 1, f[2]), false)
+    return this.bot.entity.onGround && !!below && below.boundingBox === 'empty'
+  }
+
+  /** A falling block (sand, gravel, …) is in the air over or inside one of `cells`' columns. */
+  private fallingOver (cells: V3[]): boolean {
+    for (const e of Object.values(this.bot.entities)) {
+      if (e.name !== 'falling_block' || !e.position) continue
+      const p = e.position
+      if (cells.some(c => Math.abs(p.x - (c[0] + 0.5)) < 1 && Math.abs(p.z - (c[2] + 0.5)) < 1 && p.y >= c[1] - 1)) return true
+    }
+    return false
   }
 
   private async waitFeet (to: V3, ms: number, o: ExcavateOptions): Promise<boolean> {
@@ -367,8 +411,10 @@ export class Excavator {
     const tx = cell[0] + 0.5
     const tz = cell[2] + 0.5
     const end = Date.now() + 4000
-    // Sneaking stops the bot at ledges: only use it to centre within the current cell.
-    const centring = key(cell) === key(this.feet())
+    // Sneaking stops the bot at ledges: only use it to centre within the current cell, and
+    // only over a floor (sneaking toward a floorless centre from a neighbour's lip never arrives).
+    const floor = bot.blockAt(new Vec3(cell[0], cell[1] - 1, cell[2]), false)
+    const centring = key(cell) === key(this.feet()) && !!floor && floor.boundingBox !== 'empty'
     try {
       while (Date.now() < end && !o.isAborted()) {
         const p = bot.entity.position
@@ -376,6 +422,7 @@ export class Excavator {
         const dz = tz - p.z
         const f = this.feet()
         if (Math.hypot(dx, dz) <= tol && f[1] === cell[1] && bot.entity.onGround) return true
+        if (!jump && f[1] < cell[1] && bot.entity.onGround) return false // dropped below the target
         if (Math.hypot(dx, dz) > tol) {
           await bot.look(Math.atan2(-dx, -dz), 0, true)
           bot.setControlState('forward', true)

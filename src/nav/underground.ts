@@ -35,9 +35,11 @@ export function undergroundTarget (view: BlockView, goal: NavGoal, pos: V3): Exc
     return t <= feetY - UNDERGROUND_DY ? { y: Math.floor(t) } : null
   }
   if (goal.kind !== 'near' && goal.kind !== 'block') return null
+  if (goal.mode === 'walk') return null
   const v = goal.target as V3
   const t: ExcavationTarget = { y: Math.floor(v[1]), xz: [Math.floor(v[0]), Math.floor(v[2])] }
   if (Math.hypot(pos[0] - v[0] - 0.5, pos[1] - v[1], pos[2] - v[2] - 0.5) <= Math.max(3, goal.range ?? 0)) return null
+  if (goal.mode === 'excavate') return t
   if (!isCovered(view, v)) return null
   if (t.y <= feetY - UNDERGROUND_DY) return t
   return isCovered(view, pos) ? t : null

@@ -1,12 +1,13 @@
 # Milestones
 
-There are seven milestones in total: a harness milestone (M0) and six progression milestones (A–F). Each one is a **runtime milestone**, meaning a state predicate the bot reports in `summary.json`, and also a **development gate**. Gates are measured under [evaluation.md](evaluation.md) on **held-out fresh random seeds, from a fresh spawn, unattended**. Fixture scenarios are for development only and never pass a gate.
+There are seven milestones in total: a harness milestone (M0) and six progression milestones (A–F). **Every milestone targets vanilla Minecraft Java Edition 1.16.1**, the sole target version (PROJECT.md). Gate evidence from any other version does not count. The M0 gates measured on 1.21.4 on 2026-09-27 are historical, and M0 was re-gated on 1.16.1 (evaluation.md, gate log). Each one is a **runtime milestone**, meaning a state predicate the bot reports in `summary.json`, and also a **development gate**. Gates are measured under [evaluation.md](evaluation.md) on **held-out fresh random seeds, from a fresh spawn, unattended**. Fixture scenarios are for development only and never pass a gate.
 
 Rules:
 - Work on one milestone at a time. Advance only with a batch report in `runs/` that meets the gate.
 - Before the next milestone starts, the leading failure signature of the current milestone must be diagnosed.
 - Record any gate change here before measuring against it.
 - Time limits are wall clock from bot spawn. Seeds come from a new held-out set per gate batch.
+- A change of target version invalidates every gate that was passed. M0 must be re-gated on the new version before the next milestone starts.
 
 | # | Milestone | Runtime predicate (first reached) | Gate (held-out batch) |
 |---|---|---|---|
@@ -26,11 +27,44 @@ The percentages are the *minimum to move on*. They are not final quality targets
 3. Metrics for the milestone: reach rate, median time to reach it, deaths per run, nav failure rate, and reasoner calls per run.
 4. Confirmation that no seed-specific code, coordinates or commands were added (a checklist item in the report).
 
+## 1.16.1-specific scope notes
+
+These follow from architecture.md §14. They change *how* milestones A–F are built, not their gates (the predicates above are unchanged by the migration).
+- **A:** iron and gold ore drop the ore block, so `smelt` is on the critical path for iron. Hostile mobs spawn at light ≤ 7, so excavation needs `defend`/`flee`. Night sleep (phantoms, which appear after 3 days awake) is a maintenance objective. Mining depths come from `src/version.ts`: y 16 for iron, y 11 for diamonds, lava at y ≤ 10.
+- **B:** ruined portals are a portal source: complete the frame with a lava cast (this still counts as "a portal the bot built"). Wear one golden armor piece before bartering or entering bastions (piglin neutrality). The gold can come from nether gold ore right after entry.
+- **C:** 1.16.1 bartering yields 4–8 pearls at 20/423 per ingot, and there are no piglin brutes. `barterPearls` is therefore the primary pearl strategy, with `huntEndermen` (warped forest) as the alternate. Gold comes from nether gold ore and bastions.
+- **E:** beds can come from sheep or from bartered string.
+
+## Milestone A predicate: exact reading (recorded 2026-09-28, before any A gate)
+
+`nether_ready` (`src/planner/milestones.ts` `netherReady`) is true when the bot holds, counting worn armor and the off-hand, all of the following:
+- `iron_pickaxe`, `iron_sword` and `shield`;
+- an **empty** `bucket`. A water bucket does not count as the bucket; a later lava cast needs one bucket for water and one for lava;
+- ≥ 2 iron armor pieces;
+- `flint_and_steel`;
+- ≥ 10 **cooked food**: the outputs of furnace food recipes, i.e. `cooked_*` and `baked_potato`. Bread and dried kelp do not count;
+- and either ≥ 10 `obsidian`, or a `water_bucket` plus a remembered Overworld lava pool with ≥ 10 connected lava source blocks and an open surface (`observer.scanLavaPools`, from loaded chunk data).
+
+The evaluator's ground-truth check (`netherReadyInventory`) verifies every inventory clause on the server. The lava pool is bot memory and cannot be checked from the inventory.
+
+**Information note.** The interest index (architecture §8.1) reads ore and lava positions from loaded chunk data, which includes blocks not exposed to air. The approved architecture specifies this ("ores … updated on chunkColumnLoad"), and it is client-received state. It is still stronger than a human player's view. If the project wants "exposed faces only" mining, that is a rule change, and it would need re-gating.
+
+## Open items carried into A (resolved 2026-09-28)
+
+From the 1.16.1 migration. All are fixed as general causes (architecture §10.2, §10A):
+- hazard-blind unstick → hazard-aware directions (`nav/hazards.ts`);
+- `exitWater` without an air reflex → surfaces or abandons the exit;
+- no lava escape or drowning interrupt → P0 `escapeLava`, `surfaceForAir`, `escapeSuffocation`;
+- no combat → P1 `defend` and `flee` with a deterministic threat score;
+- excavation planner dead ends → not observed as a leading signature in the A dev batches; no change;
+- benchmark underground trials inheriting an ocean position → dry setup, or `SETUP_FAILED`, excluded from the rate;
+- outward log search → still unit-test evidence only; the A runs use it on every wood trip.
+
 ## What each milestone builds (scope guard)
 - **M0:** evaluator, server lifecycle, bot connect, observer and digest, telemetry, runner, `navigate`, `collect`, `craft`, NoneReasoner, `inspect` CLI, navigation benchmark.
 - **A:** interrupts P0–P2, `defend` and `flee`, `smelt`, `obtain` and its source table, `explore`, `shelter`, progression policy up to `nether_ready`, recovery ladder L1–L3, and death handling.
 - **B:** `buildNetherPortal` (lava cast and obsidian), the `nether` nav profile, portal memory and return, and the gate plus a real `ModelClient` behind `REASONER=model`, measured against `none`.
-- **C:** `findFortress`, `collectBlazeRods`, `barterPearls`, `huntEndermen`, and strategy switching.
+- **C:** `collectGold`, `barterPearls`, `huntEndermen`, `findFortress`, `collectBlazeRods`, and strategy switching.
 - **D:** `craft eyes`, `locateStronghold`, `enterStrongholdPortal`, and the `stronghold` profile.
 - **E:** bed crafting (wool, sheep), `killDragon` (bed_perch, then melee_perch as the alternate), and the End void and enderman interrupts.
 - **F:** no new components. Only fixes to the ranked failure signatures.

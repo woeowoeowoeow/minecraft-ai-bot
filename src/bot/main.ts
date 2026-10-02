@@ -5,24 +5,30 @@ import { readFileSync } from 'node:fs'
 import { once } from 'node:events'
 import * as mfNs from 'mineflayer'
 import { Controller, type ControllerResult } from '../controller/controller.js'
+import { ProgressionController } from '../controller/progression.js'
+import { A_FLAGS } from '../planner/milestones.js'
+import { resyncInventory } from '../skills/generic/craft.js'
 import { runNavBench } from '../controller/navbench.js'
 import { loadPathfinder, PathfinderNavigator } from '../nav/pathfinder.js'
 import { EventBus } from '../observer/events.js'
 import { Observer } from '../observer/observer.js'
-import { M0_REQUIREMENTS, MILESTONES } from '../planner/policy.js'
+import { A_MILESTONES, A_REQUIREMENTS, M0_REQUIREMENTS, MILESTONES } from '../planner/policy.js'
 import { makeReasoner, type Script } from '../planner/reasoner.js'
 import { BotConfigS, type BotResult, type NavBenchTrial } from '../schema/index.js'
-import { registerM0Skills } from '../skills/registry.js'
+import { registerASkills, registerM0Skills } from '../skills/registry.js'
 import { SkillRunner } from '../skills/runner.js'
 import type { SkillEnv } from '../skills/types.js'
 import { Telemetry } from '../telemetry/telemetry.js'
 import { voxelSlice } from '../telemetry/voxels.js'
+import { MC_VERSION } from '../version.js'
+import { installDigAck, installRaycastGuard } from './protocol-fixes.js'
+import { startStallWatch } from './stall-watch.js'
+import { join } from 'node:path'
 import { mulberry32 } from './rng.js'
 
 type MF = typeof import('mineflayer')
 const mineflayer: MF = ((mfNs as unknown as { default?: MF }).default ?? mfNs) as MF
 
-export const MC_VERSION = '1.21.4'
 const EXIT = { ok: 0, crash: 1, infra: 2, unrecoverable: 3 } as const
 
 function log (...a: unknown[]): void {
@@ -37,6 +43,10 @@ async function main (): Promise<void> {
 
   const bot = mineflayer.createBot({ host: cfg.host, port: cfg.port, username: cfg.username, version: MC_VERSION, auth: 'offline', checkTimeoutInterval: 60_000 })
   const bus = new EventBus(Date.now, () => Number(bot.time?.age ?? 0))
+  installDigAck(bot, c => bus.emit('dig_ack_correction', c, 'warn'))
+  let rayTrips = 0
+  installRaycastGuard(why => { if (rayTrips++ < 20) bus.emit('error', { message: `raycast guard: ${why}` }, 'warn') })
+  startStallWatch(join(cfg.runDir, 'stalls.jsonl'))
   loadPathfinder(bot)
   const nav = new PathfinderNavigator(bot, bus)
   const obs = new Observer(bot, bus)
@@ -49,6 +59,8 @@ async function main (): Promise<void> {
 
   let finished = false
   let controller: Controller | null = null
+  let progression: ProgressionController | null = null
+  const milestoneDefs = cfg.scenario === 'a' ? A_MILESTONES : MILESTONES
   let navbench: NavBenchTrial[] | undefined
   let stopRequested = false
 
@@ -57,19 +69,21 @@ async function main (): Promise<void> {
     finished = true
     try {
       controller?.checkMilestones()
+      progression?.checkMilestones()
       const s = obs.state()
       const result: BotResult = {
         outcome: r.outcome, reason: r.reason,
         elapsedS: Math.round((Date.now() - started) / 1000), gameTicks: s.tick,
-        milestones: Object.fromEntries(Object.keys(MILESTONES).map(k => [k, s.milestones[k] ?? null])),
-        flags: {},
-        deaths: obs.memory.deaths.map(d => ({ t: d.t, dim: d.dim, message: null })),
+        milestones: Object.fromEntries(Object.keys(milestoneDefs).map(k => [k, s.milestones[k] ?? null])),
+        flags: progression ? Object.fromEntries(Object.keys(A_FLAGS).map(k => [k, progression!.flags[k] ?? null])) : {},
+        deaths: obs.memory.deaths.map(d => ({ t: d.t, dim: d.dim, message: d.cause ?? null })),
         terminalFailure: r.terminalFailure,
         failures: telemetry.failures,
         skills: telemetry.stats.skills,
         nav: telemetry.stats.nav,
         reasoner: { calls: controller?.reasonerCalls ?? 0, byKind: controller?.reasonerByKind ?? {}, fallbacks: controller?.reasonerFallbacks ?? 0, impl: cfg.reasoner },
         physicsCorrections: obs.physicsCorrections,
+        interrupts: progression?.interrupts,
         navbench,
       }
       bus.emit('run_end', { outcome: r.outcome, reason: r.reason }, r.outcome === 'goal_reached' ? 'info' : 'warn')
@@ -94,6 +108,7 @@ async function main (): Promise<void> {
     if (finished) { try { bot.quit() } catch { /* ignore */ } setTimeout(() => process.exit(0), 200); return }
     const bundle = safe(() => telemetry.failureBundle('RUN_TIMEOUT', null, { note: 'evaluator wall-clock limit' }, 300))
     controller?.stop()
+    progression?.stop()
     void finish({ outcome: 'timeout', reason: 'evaluator wall-clock limit', terminalFailure: { class: 'SKILL_TIMEOUT', signature: 'SKILL_TIMEOUT|run|-|-|scope=run', bundle } }, EXIT.ok)
   })
   process.on('uncaughtException', (e) => {
@@ -142,7 +157,7 @@ async function main (): Promise<void> {
     random,
     capture: label => { telemetry.snapshot(label) },
   }
-  const runner = registerM0Skills(new SkillRunner(env))
+  const runner = cfg.scenario === 'a' ? registerASkills(new SkillRunner(env)) : registerM0Skills(new SkillRunner(env))
 
   let script: Script = {}
   if (cfg.reasoner === 'scripted') {
@@ -157,6 +172,27 @@ async function main (): Promise<void> {
     })
     const ok = navbench.filter(t => t.ok).length
     return void finish({ outcome: 'goal_reached', reason: `navbench ${ok}/${navbench.length} trials ok`, terminalFailure: null }, EXIT.ok)
+  }
+
+  if (cfg.scenario === 'a') {
+    progression = new ProgressionController({
+      runner, bus, telemetry,
+      state: () => obs.state(), setObjective: o => obs.setObjective(o),
+      requirements: A_REQUIREMENTS, milestones: A_MILESTONES, flags: A_FLAGS, target: 'A', deadline,
+      waitForRespawn: async () => { await withTimeout(once(bot, 'spawn'), 15_000, 'respawn').catch(() => {}); await new Promise(r => setTimeout(r, 1500)) },
+      resync: async () => { try { if (bot.currentWindow) bot.closeWindow(bot.currentWindow) } catch { /* ignore */ } await resyncInventory(bot) },
+      afterDeath: () => { nav.stop(); obs.afterDeath() },
+    })
+    let pr: ControllerResult
+    try {
+      pr = await progression.run()
+    } catch (e) {
+      log('controller crashed', e)
+      bus.emit('error', { message: String(e), stack: String((e as Error).stack ?? '').split('\n').slice(0, 8) }, 'error')
+      const bundle = safe(() => telemetry.failureBundle('INFRA', null, { error: String(e) }))
+      pr = { outcome: 'infra_error', reason: `controller crashed: ${String(e)}`, terminalFailure: { class: 'INFRA', signature: 'INFRA|controller|-|-|exception', bundle } }
+    }
+    return void finish(pr, pr.outcome === 'goal_reached' ? EXIT.ok : pr.outcome === 'infra_error' ? EXIT.infra : EXIT.unrecoverable)
   }
 
   controller = new Controller({

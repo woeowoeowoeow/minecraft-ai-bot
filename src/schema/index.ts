@@ -12,6 +12,8 @@ export const FailureClassS = z.enum([
   'NAV_STUCK', 'NAV_UNREACHABLE', 'NAV_HAZARD', 'NOT_FOUND', 'SEARCH_EXHAUSTED',
   'MISSING_RESOURCE', 'PRECONDITION_FAILED', 'COMBAT_DANGER', 'STATE_INCONSISTENT',
   'SKILL_TIMEOUT', 'STALLED', 'DEATH', 'STRATEGY_EXHAUSTED', 'INFRA',
+  // An objective skill reported success but its requirement is still unmet (controller invariant).
+  'OBJECTIVE_NOT_SATISFIED',
 ])
 export type FailureClass = z.infer<typeof FailureClassS>
 
@@ -33,6 +35,10 @@ export const NavGoalS = z.object({
   kind: z.enum(['block', 'near', 'xz', 'y', 'entity', 'away', 'reach']),
   target: z.union([Vec3S, z.number()]),
   range: z.number().optional(),
+  /** 'excavate': reach a buried `near`/`block` target by controlled excavation even when it is shallow or uncovered; 'walk': pathfinder only. */
+  mode: z.enum(['auto', 'excavate', 'walk']).optional(),
+  /** Plan with the strong dry-land preference from the start (fleeing aquatic mobs, inland relocation). */
+  dry: z.boolean().optional(),
 })
 export type NavGoal = z.infer<typeof NavGoalS>
 
@@ -65,9 +71,15 @@ export const NavDiagS = z.object({
   reason: z.string().optional(),
   /** 'pathfinder' search, or deterministic 'excavate' for underground targets. */
   strategy: z.enum(['pathfinder', 'excavate']).optional(),
+  /** Excavation start check: already dry, relocated to a dry cell, or no dry cell in reach (fails NAV_HAZARD). */
+  dryStart: z.enum(['already_dry', 'found', 'none']).optional(),
   excavation: z.object({
     steps: z.number(), dug: z.number(), falls: z.number(),
     byKind: z.record(z.string(), z.number()), entry: Vec3S, lastBlocked: z.string().optional(),
+    /** Cells found solid again after a step's dig pass (falling blocks, refused breaks) and re-dug. */
+    refills: z.number().optional(),
+    /** Drops from a neighbour's lip into the open feet cell before planning. */
+    unperched: z.number().optional(),
   }).optional(),
   water: z.object({
     msInWater: z.number(), exitAttempts: z.number(), exits: z.number(), dryReplans: z.number(), longestSwim: z.number(),
@@ -121,7 +133,11 @@ export const EventTypeS = z.enum([
   'damage', 'item_delta', 'location_discovered', 'search_step',
   'failure', 'recovery_step', 'reasoner_call', 'reasoner_result', 'reasoner_skipped',
   'inventory_desync', 'chat', 'disconnect', 'intervention', 'capture',
-  'physics_correction', 'navbench_trial', 'error', 'excavation_step', 'water_event',
+  'physics_correction', 'navbench_trial', 'navbench_setup', 'error', 'excavation_step', 'water_event', 'dig_ack_correction',
+  // Milestone A survival telemetry: ranged-threat cover attempts, death context, day/night scheduling.
+  'cover', 'death_context', 'schedule',
+  // Shoreline food risk: rejected and abandoned food targets, inland relocations.
+  'food_risk',
 ])
 export type EventType = z.infer<typeof EventTypeS>
 
@@ -206,7 +222,7 @@ export const DecisionResponseS = z.object({
 export type DecisionResponse = z.infer<typeof DecisionResponseS>
 
 // ── Bot process config (evaluator → bot). Never contains the seed. ───────
-export const ScenarioS = z.enum(['m0', 'navbench'])
+export const ScenarioS = z.enum(['m0', 'navbench', 'a'])
 export type Scenario = z.infer<typeof ScenarioS>
 
 export const BotConfigS = z.object({
@@ -227,7 +243,7 @@ export type Outcome = z.infer<typeof OutcomeS>
 
 export const NavBenchTrialS = z.object({
   i: z.number(),
-  kind: z.enum(['surface30', 'surface100', 'surface300', 'cave']),
+  kind: z.enum(['surface30', 'surface100', 'surface300', 'cave', 'depth']),
   profile: NavProfileS,
   ok: z.boolean(),
   class: z.string().nullable(),
@@ -276,6 +292,7 @@ export const BotResultS = z.object({
   nav: NavStatsS,
   reasoner: z.object({ calls: z.number(), byKind: z.record(z.string(), z.number()), fallbacks: z.number(), impl: z.string() }),
   physicsCorrections: z.number(),
+  interrupts: z.number().optional(),
   navbench: z.array(NavBenchTrialS).optional(),
 })
 export type BotResult = z.infer<typeof BotResultS>

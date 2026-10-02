@@ -4,15 +4,21 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { RunSummaryS, type RunSummary, type Scenario } from '../schema/index.js'
+import { resolveJava } from './java.js'
 import { ProcessRegistry } from './procs.js'
 import { aggregate, renderReport, type BatchFailureRow } from './report.js'
-import { ROOT, runOne, WORLDS, type FixtureName } from './run.js'
-import { MC_VERSION, SERVER_PROPERTIES } from './server.js'
+import { renderSurvival } from './survival-report.js'
+import { FIXTURES, ROOT, runOne, WORLDS, type FixtureName } from './run.js'
+import { MC_VERSION } from '../version.js'
+import { SERVER_PROPERTIES } from './server.js'
 
 export const RUNS = join(ROOT, 'runs')
 
 /** Gate time limits from milestones.md (seconds from bot spawn). */
-export const GATE_LIMIT_S: Record<string, number> = { M0: 600 }
+export const GATE_LIMIT_S: Record<string, number> = { M0: 600, A: 2700 }
+
+/** Batch target milestone per scenario. */
+export const SCENARIO_TARGET: Record<string, string> = { m0: 'M0', a: 'A', navbench: 'navbench' }
 
 /** Fresh 64-bit world seed from the OS CSPRNG (evaluation.md §2.1). */
 export function freshSeed (): string {
@@ -48,7 +54,8 @@ export type BatchOptions = {
   parallel: number
   limitMs: number
   reasoner: 'none' | 'scripted'
-  set: 'heldout' | 'replay'
+  /** 'dev': fresh seeds for development batches (never a gate); 'heldout': a gate set. */
+  set: 'heldout' | 'replay' | 'dev'
   replay?: string[]           // runIds whose private seeds to reuse (set = replay)
   keepWorld?: boolean
   label?: string
@@ -63,7 +70,7 @@ function stamp (): string {
 
 export async function runBatch (o: BatchOptions): Promise<string> {
   const batchId = `${stamp()}-${o.scenario}${o.label ? '-' + o.label : ''}`
-  const seedSet = o.fixture ? `fixture-${batchId}` : o.set === 'heldout' ? `heldout-${batchId}` : 'replay'
+  const seedSet = o.fixture ? `fixture-${batchId}` : o.set === 'heldout' ? `heldout-${batchId}` : o.set === 'dev' ? `dev-${batchId}` : 'replay'
   const dir = join(RUNS, batchId)
   mkdirSync(dir, { recursive: true })
   const registry = new ProcessRegistry(join(ROOT, '.cache', 'pids'))
@@ -77,14 +84,16 @@ export async function runBatch (o: BatchOptions): Promise<string> {
     if (stale.length) console.log(`removed ${stale.length} stale world dir(s)`)
   }
 
+  const java = resolveJava(ROOT)
   const rev = codeRev()
-  const target = o.scenario === 'm0' ? 'M0' : 'navbench'
+  const target = SCENARIO_TARGET[o.scenario] ?? o.scenario
   const seeds: string[] = o.set === 'replay'
     ? (o.replay ?? []).map(id => readFileSync(join(findRunDir(id), 'private', 'seed.txt'), 'utf8').trim())
     : Array.from({ length: o.n }, () => freshSeed())
   const meta = {
     batchId, seedSet, n: seeds.length, scenario: o.scenario, reasoner: o.reasoner, limitMin: o.limitMs / 60_000, target,
-    codeRev: rev.rev, dirty: rev.dirty, mcVersion: MC_VERSION, server: SERVER_PROPERTIES, parallel: o.parallel,
+    codeRev: rev.rev, dirty: rev.dirty, mcVersion: MC_VERSION, java: java.version,
+    server: { ...SERVER_PROPERTIES, ...(o.fixture ? FIXTURES[o.fixture].properties : {}) }, parallel: o.parallel,
     startedAt: new Date().toISOString(), node: process.version, fixture: o.fixture ?? null,
   }
   writeFileSync(join(dir, 'batch.json'), JSON.stringify({ meta, status: 'running' }, null, 1))
@@ -100,10 +109,10 @@ export async function runBatch (o: BatchOptions): Promise<string> {
       console.log(`[${new Date().toISOString()}] run ${i + 1}/${seeds.length} ${runId} starting (port ${port})`)
       const s = await runOne({
         batchId, runId, runDir, seed: seeds[i]!, seedSet, scenario: o.scenario, reasoner: o.reasoner, limitMs: o.limitMs,
-        port, rngSeed: randomInt(0, 2 ** 31 - 1), target, keepWorld: o.keepWorld, codeRev: rev, registry, fixture: o.fixture,
+        port, rngSeed: randomInt(0, 2 ** 31 - 1), target, keepWorld: o.keepWorld, codeRev: rev, registry, fixture: o.fixture, java,
       })
       summaries[i] = s
-      console.log(`[${new Date().toISOString()}] run ${runId}: ${s.outcome} (${s.outcomeReason}) M0=${s.milestones.M0 ?? '–'}s elapsed=${s.elapsedS}s nav=${s.nav.ok}/${s.nav.calls} artifacts=${s.artifacts.complete ? 'complete' : 'missing ' + s.artifacts.missing.join(',')}`)
+      console.log(`[${new Date().toISOString()}] run ${runId}: ${s.outcome} (${s.outcomeReason}) ${target}=${s.milestones[target] ?? '–'}s deaths=${s.deaths.length} elapsed=${s.elapsedS}s nav=${s.nav.ok}/${s.nav.calls} artifacts=${s.artifacts.complete ? 'complete' : 'missing ' + s.artifacts.missing.join(',')}`)
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, Math.min(o.parallel, seeds.length)) }, worker))
@@ -150,11 +159,12 @@ export function writeBatchReport (batchId: string, metaOverride?: Record<string,
   const agg = aggregate(runs, failures, meta.target, GATE_LIMIT_S[meta.target] ?? meta.limitMin * 60)
   writeFileSync(join(dir, 'failures.jsonl'), failures.map(f => JSON.stringify({ runId: f.runId, t: f.t, class: f.class, signature: f.signature, milestone: f.milestone, ladderLevel: f.ladderLevel, bundle: f.bundle ? `${f.runId}/${f.bundle}` : null })).join('\n') + (failures.length ? '\n' : ''))
   writeFileSync(join(dir, 'batch.json'), JSON.stringify({ meta, status: 'complete', aggregate: agg }, null, 1))
-  const report = renderReport({
+  const base = renderReport({
     batchId, seedSet: String(meta.seedSet), codeRev: String(meta.codeRev), dirty: Boolean(meta.dirty), scenario: String(meta.scenario),
     reasoner: String(meta.reasoner), limitMin: meta.limitMin, date: String(meta.startedAt ?? ''), server: (meta.server ?? {}) as Record<string, string>,
-    fixture: (meta.fixture as string | null) ?? null,
+    fixture: (meta.fixture as string | null) ?? null, mcVersion: meta.mcVersion as string | undefined, java: meta.java as string | undefined,
   }, agg, runs)
+  const report = meta.scenario === 'a' ? base.replace('## Skills', `${renderSurvival(dir, runs)}\n## Skills`) : base
   writeFileSync(join(dir, 'report.md'), report)
   return report
 }

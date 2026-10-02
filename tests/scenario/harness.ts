@@ -8,8 +8,11 @@ import * as mfNs from 'mineflayer'
 import type { Bot } from 'mineflayer'
 import { freePort } from '../../src/evaluation/batch.js'
 import { ProcessRegistry } from '../../src/evaluation/procs.js'
+import { resolveJava } from '../../src/evaluation/java.js'
 import { JAR, ROOT, WORLDS } from '../../src/evaluation/run.js'
-import { MC_VERSION, ServerProcess } from '../../src/evaluation/server.js'
+import { ServerProcess } from '../../src/evaluation/server.js'
+import { MC_VERSION } from '../../src/version.js'
+import { installDigAck, installRaycastGuard } from '../../src/bot/protocol-fixes.js'
 import { loadPathfinder, PathfinderNavigator } from '../../src/nav/pathfinder.js'
 import { EventBus } from '../../src/observer/events.js'
 import type { EventRecord } from '../../src/schema/index.js'
@@ -17,8 +20,10 @@ import type { EventRecord } from '../../src/schema/index.js'
 type MF = typeof import('mineflayer')
 const mineflayer: MF = ((mfNs as unknown as { default?: MF }).default ?? mfNs) as MF
 
-/** Superflat default: bedrock y=-64, dirt -63..-62, grass -61; players stand at y=-60. */
-export const FLAT_Y = -60
+/** 1.16.1 superflat default: bedrock y=0, dirt 1..2, grass 3; players stand at y=4. */
+export const FLAT_Y = 4
+/** Absolute y for a height relative to the flat ground's standing level. */
+export const Y = (dy: number) => FLAT_Y + dy
 
 export type Fixture = {
   server: ServerProcess
@@ -29,7 +34,7 @@ export type Fixture = {
   cmd (line: string): Promise<void>
   /** /fill split into volumes under the vanilla 32768-block limit. */
   fill (x1: number, y1: number, z1: number, x2: number, y2: number, z2: number, block: string): Promise<void>
-  /** Clear the arena (|x|,|z| ≤ r, y up to `top`) back to the superflat ground. */
+  /** Clear the arena (|x|,|z| ≤ r, y up to `top`, absolute) back to the superflat ground. */
   reset (r?: number, top?: number): Promise<void>
   /** Teleport, clear inventory, reset vitals, and wait for the client to settle. */
   place (x: number, y: number, z: number, items?: Record<string, number>): Promise<void>
@@ -38,17 +43,20 @@ export type Fixture = {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-export async function startFixture (name: string): Promise<Fixture> {
+/** `spawnAnimals`: the 1.16.1 server removes summoned animals when spawn-animals=false. */
+export type FixtureOptions = { difficulty?: 'peaceful' | 'easy' | 'normal'; keepInventory?: boolean; spawnAnimals?: boolean }
+
+export async function startFixture (name: string, fo: FixtureOptions = {}): Promise<Fixture> {
   const registry = new ProcessRegistry(join(ROOT, '.cache', 'pids'))
   const port = await freePort()
   const worldDir = join(WORLDS, `scenario-${name}-${Date.now()}`)
   const server = new ServerProcess({
-    worldDir, port, seed: '1', jarPath: JAR,
-    properties: { 'level-type': 'minecraft\\:flat', 'generate-structures': 'false', difficulty: 'peaceful', 'spawn-monsters': 'false', 'spawn-animals': 'false' },
+    worldDir, port, seed: '1', jarPath: JAR, javaBin: resolveJava(ROOT).bin,
+    properties: { 'level-type': 'flat', 'generate-structures': 'false', difficulty: fo.difficulty ?? 'peaceful', 'spawn-monsters': 'false', 'spawn-animals': String(fo.spawnAnimals ?? false) },
   }, registry)
   await server.start()
   const cmd = async (line: string) => { server.command(line); await sleep(60) }
-  for (const g of ['doDaylightCycle false', 'doWeatherCycle false', 'doMobSpawning false', 'doTileDrops true', 'keepInventory true']) await cmd(`gamerule ${g}`)
+  for (const g of ['doDaylightCycle false', 'doWeatherCycle false', 'doMobSpawning false', 'doTileDrops true', `keepInventory ${fo.keepInventory ?? true}`]) await cmd(`gamerule ${g}`)
   await cmd('time set day')
 
   const bot = mineflayer.createBot({ host: '127.0.0.1', port, username: 'Bot', version: MC_VERSION, auth: 'offline' })
@@ -57,6 +65,8 @@ export async function startFixture (name: string): Promise<Fixture> {
   const bus = new EventBus()
   const events: EventRecord[] = []
   bus.on(ev => { events.push(ev) })
+  installDigAck(bot, c => bus.emit('dig_ack_correction', c, 'warn'))
+  installRaycastGuard(why => bus.emit('error', { message: `raycast guard: ${why}` }, 'warn'))
   loadPathfinder(bot)
   const nav = new PathfinderNavigator(bot, bus)
 
@@ -67,11 +77,12 @@ export async function startFixture (name: string): Promise<Fixture> {
     const slab = Math.max(1, Math.floor(32_768 / ((by - ay + 1) * (bz - az + 1))))
     for (let x = ax; x <= bx; x += slab) await cmd(`fill ${x} ${ay} ${az} ${Math.min(bx, x + slab - 1)} ${by} ${bz} ${block}`)
   }
-  const reset = async (r = 32, top = -20) => {
-    await fill(-r, -61, -r, r, top, r, 'air')
-    await fill(-r, -63, -r, r, -62, r, 'dirt')
-    await fill(-r, -61, -r, r, -61, r, 'grass_block')
+  const reset = async (r = 32, top = Y(40)) => {
+    await fill(-r, Y(-1), -r, r, top, r, 'air')
+    await fill(-r, Y(-3), -r, r, Y(-2), r, 'dirt')
+    await fill(-r, Y(-1), -r, r, Y(-1), r, 'grass_block')
     await cmd('kill @e[type=item]')
+    await cmd('kill @e[type=!player]')
   }
 
   const place = async (x: number, y: number, z: number, items: Record<string, number> = {}) => {

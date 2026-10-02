@@ -41,9 +41,12 @@ export type BatchAggregate = {
   signatures: SignatureRow[]
   deaths: { total: number; perRun: number; causes: Record<string, number> }
   skills: Record<string, { runs: number; ok: number; rate: number; p50s: number | null; topFail: string | null }>
-  nav: { calls: number; ok: number; rate: number; stuck: number; unreachable: number; hazard: number; timeout: number; stuckEvents: number; blocksTravelled: number; stuckEventsPerKm: number | null; byProfile: Record<string, { calls: number; ok: number }> }
+  nav: { calls: number; ok: number; rate: number; cancelled: number; stuck: number; unreachable: number; hazard: number; timeout: number; stuckEvents: number; blocksTravelled: number; stuckEventsPerKm: number | null; byProfile: Record<string, { calls: number; ok: number }> }
   reasoner: { calls: number; perRun: number; fallbacks: number; byKind: Record<string, number> }
   navbench: NavBenchAgg | null
+  /** Funnel over first-reached flags (in the order the bot reports them), then the target milestone. */
+  funnel: { id: string; reached: number; p50: number | null; p90: number | null }[]
+  interventions: number
 }
 
 /** Is this run a success for the batch target? A ground-truth disagreement is never a success. */
@@ -105,7 +108,9 @@ export function aggregate (runs: RunSummary[], failures: BatchFailureRow[], targ
       const a = (skills[id] ??= { runs: 0, ok: 0, rate: 0, p50s: null, topFail: null })
       a.runs += s.runs
       a.ok += s.ok
-      ;(skillDur[id] ??= []).push(...s.durationsS)
+      // No spread: one run can hold millions of durations (a runaway loop), which overflows the stack.
+      const dur = (skillDur[id] ??= [])
+      for (const d of s.durationsS) dur.push(d)
       const fc = (skillFail[id] ??= {})
       for (const [c, v] of Object.entries(s.failClasses)) fc[c] = (fc[c] ?? 0) + v
     }
@@ -116,16 +121,18 @@ export function aggregate (runs: RunSummary[], failures: BatchFailureRow[], targ
     a.topFail = Object.entries(skillFail[id] ?? {}).sort((x, y) => y[1] - x[1])[0]?.[0] ?? null
   }
 
-  const nav = { calls: 0, ok: 0, rate: 0, stuck: 0, unreachable: 0, hazard: 0, timeout: 0, stuckEvents: 0, blocksTravelled: 0, stuckEventsPerKm: null as number | null, byProfile: {} as Record<string, { calls: number; ok: number }> }
+  const nav = { calls: 0, ok: 0, rate: 0, cancelled: 0, stuck: 0, unreachable: 0, hazard: 0, timeout: 0, stuckEvents: 0, blocksTravelled: 0, stuckEventsPerKm: null as number | null, byProfile: {} as Record<string, { calls: number; ok: number }> }
   for (const r of runs) {
-    nav.calls += r.nav.calls; nav.ok += r.nav.ok; nav.stuck += r.nav.stuck; nav.unreachable += r.nav.unreachable
+    nav.calls += r.nav.calls; nav.ok += r.nav.ok; nav.cancelled += r.nav.cancelled ?? 0; nav.stuck += r.nav.stuck; nav.unreachable += r.nav.unreachable
     nav.hazard += r.nav.hazard; nav.timeout += r.nav.timeout; nav.stuckEvents += r.nav.stuckEvents; nav.blocksTravelled += r.nav.blocksTravelled
     for (const [p, v] of Object.entries(r.nav.byProfile)) {
       const b = (nav.byProfile[p] ??= { calls: 0, ok: 0 })
       b.calls += v.calls; b.ok += v.ok
     }
   }
-  nav.rate = nav.calls ? nav.ok / nav.calls : 0
+  // Calls cancelled by a preemption (an interrupt took over) are neither successes nor failures.
+  const decided = nav.calls - nav.cancelled
+  nav.rate = decided ? nav.ok / decided : 0
   nav.stuckEventsPerKm = nav.blocksTravelled > 0 ? Math.round((nav.stuckEvents / (nav.blocksTravelled / 1000)) * 10) / 10 : null
 
   const reasoner = { calls: 0, perRun: 0, fallbacks: 0, byKind: {} as Record<string, number> }
@@ -136,6 +143,12 @@ export function aggregate (runs: RunSummary[], failures: BatchFailureRow[], targ
   reasoner.perRun = runs.length ? Math.round((reasoner.calls / runs.length) * 10) / 10 : 0
 
   const trials = runs.flatMap(r => r.navbench ?? [])
+  const flagIds: string[] = []
+  for (const r of runs) for (const k of Object.keys(r.flags)) if (!flagIds.includes(k)) flagIds.push(k)
+  const funnel = flagIds.map(id => {
+    const ts = runs.map(r => r.flags[id]).filter((t): t is number => typeof t === 'number')
+    return { id, reached: ts.length, p50: quantile(ts, 0.5), p90: quantile(ts, 0.9) }
+  })
   return {
     n: runs.length,
     scored: n,
@@ -152,6 +165,8 @@ export function aggregate (runs: RunSummary[], failures: BatchFailureRow[], targ
     nav,
     reasoner,
     navbench: trials.length ? aggregateNavBench(trials) : null,
+    funnel,
+    interventions: runs.reduce((a, r) => a + r.interventions, 0),
   }
 }
 
@@ -163,7 +178,8 @@ export function aggregateNavBench (trials: NavBenchTrial[]): NavBenchAgg {
     groups.set('all', [...(groups.get('all') ?? []), t])
   }
   for (const [kind, ts] of groups) {
-    const scored = ts.filter(t => t.class !== 'NO_TARGET')
+    // Trials without a target or without a valid setup measure nothing about navigation.
+    const scored = ts.filter(t => t.class !== 'NO_TARGET' && t.class !== 'SETUP_FAILED')
     const ok = scored.filter(t => t.ok)
     const blocks = scored.reduce((a, t) => a + t.blocksTravelled, 0)
     const okStraight = ok.reduce((a, t) => a + t.straightDist, 0)
@@ -188,13 +204,13 @@ export function aggregateNavBench (trials: NavBenchTrial[]): NavBenchAgg {
 
 const pct = (x: number) => `${Math.round(x * 1000) / 10}%`
 
-export function renderReport (meta: { batchId: string; seedSet: string; codeRev: string; dirty: boolean; scenario: string; reasoner: string; limitMin: number; date: string; server: Record<string, string>; fixture?: string | null }, agg: BatchAggregate, runs: RunSummary[]): string {
+export function renderReport (meta: { batchId: string; seedSet: string; codeRev: string; dirty: boolean; scenario: string; reasoner: string; limitMin: number; date: string; server: Record<string, string>; fixture?: string | null; mcVersion?: string; java?: string }, agg: BatchAggregate, runs: RunSummary[]): string {
   const L: string[] = []
   L.push(`# Batch report — ${meta.batchId}`, '')
   if (meta.fixture) L.push(`> **Fixture batch (\`${meta.fixture}\`)**: the evaluator set up state with console commands. Development evidence only; never counts toward a gate.`, '')
   L.push(`- Seed set: \`${meta.seedSet}\` (fresh random seeds, evaluator-private) · n = ${agg.n} · scenario \`${meta.scenario}\` · reasoner \`${meta.reasoner}\``)
   L.push(`- Code: \`${meta.codeRev}\`${meta.dirty ? ' (dirty)' : ''} · limit ${meta.limitMin} min · ${meta.date}`)
-  L.push(`- Server: vanilla ${'1.21.4'}, difficulty=${meta.server.difficulty}, view-distance=${meta.server['view-distance']}, online-mode=${meta.server['online-mode']}, no ops`)
+  L.push(`- Server: vanilla ${meta.mcVersion ?? '?'}${meta.java ? ` (Java ${meta.java})` : ''}, difficulty=${meta.server.difficulty}, view-distance=${meta.server['view-distance']}, online-mode=${meta.server['online-mode']}, no ops`)
   L.push('', '**Anti-overfitting checklist:** no seed values, coordinates, structure offsets or per-seed branches in `src/`/`config/`; seeds never passed to the bot (env whitelist); bot has no ops and uses no commands; server log used only as evaluator ground truth; fixes target failure signatures, not runs.', '')
 
   L.push('## Outcomes', '')
@@ -207,7 +223,16 @@ export function renderReport (meta: { batchId: string; seedSet: string; codeRev:
   const m = agg.milestone
   L.push(`| milestone | reached | within ${Math.round(m.limitS / 60)} min | p50 s | p90 s |`, '|---|---|---|---|---|')
   L.push(`| ${m.id} | ${m.reached}/${agg.n} | ${m.withinLimit}/${agg.n} | ${m.p50 ?? '–'} | ${m.p90 ?? '–'} |`, '')
-  L.push(`Run wall time (bot): p50 ${agg.elapsed.p50 ?? '–'} s, p90 ${agg.elapsed.p90 ?? '–'} s, max ${agg.elapsed.max ?? '–'} s.`, '')
+  L.push(`Run wall time (bot): p50 ${agg.elapsed.p50 ?? '–'} s, p90 ${agg.elapsed.p90 ?? '–'} s, max ${agg.elapsed.max ?? '–'} s. Interventions: ${agg.interventions}.`, '')
+  if (agg.funnel.length) {
+    L.push('| flag (first reached) | reached | p50 s | p90 s | drop-off |', '|---|---|---|---|---|')
+    let prev = agg.n
+    for (const f of agg.funnel) {
+      L.push(`| ${f.id} | ${f.reached}/${agg.n} | ${f.p50 ?? '–'} | ${f.p90 ?? '–'} | ${prev - f.reached > 0 ? '−' + (prev - f.reached) : '0'} |`)
+      prev = f.reached
+    }
+    L.push('')
+  }
 
   L.push('## Top failure signatures', '')
   if (!agg.signatures.length) L.push('_None._')
@@ -227,14 +252,14 @@ export function renderReport (meta: { batchId: string; seedSet: string; codeRev:
 
   L.push('## Navigation', '')
   const n = agg.nav
-  L.push(`${n.calls} calls, ${pct(n.rate)} ok · stuck ${n.stuck} · unreachable ${n.unreachable} · hazard ${n.hazard} · timeout ${n.timeout} · stuck events ${n.stuckEvents} (${n.stuckEventsPerKm ?? '–'}/km) · ${Math.round(n.blocksTravelled)} blocks travelled`)
+  L.push(`${n.calls} calls (${n.cancelled} cancelled by preemption), ${pct(n.rate)} of the rest ok (navigation failure rate ${pct(n.calls - n.cancelled ? 1 - n.rate : 0)}) · stuck ${n.stuck} · unreachable ${n.unreachable} · hazard ${n.hazard} · timeout ${n.timeout} · stuck events ${n.stuckEvents} (${n.stuckEventsPerKm ?? '–'}/km) · ${Math.round(n.blocksTravelled)} blocks travelled`)
   for (const [p, v] of Object.entries(n.byProfile)) L.push(`- profile \`${p}\`: ${v.ok}/${v.calls} ok`)
   L.push('')
 
   if (agg.navbench) {
     L.push('## Navigation benchmark', '')
     L.push('| target | trials | ok | rate (95% CI) | s/block | stuck/km | p50 s | p90 s | failures |', '|---|---|---|---|---|---|---|---|---|')
-    for (const kind of ['surface30', 'surface100', 'surface300', 'cave', 'all']) {
+    for (const kind of ['surface30', 'surface100', 'surface300', 'cave', 'depth', 'all']) {
       const b = agg.navbench[kind]
       if (!b) continue
       L.push(`| ${kind} | ${b.trials} | ${b.ok} | ${pct(b.rate)} (${pct(b.ci[0])}–${pct(b.ci[1])}) | ${b.secPerBlock ?? '–'} | ${b.stuckPerKm ?? '–'} | ${b.p50s ?? '–'} | ${b.p90s ?? '–'} | ${Object.entries(b.classes).map(([c, v]) => `${c}×${v}`).join(', ') || '–'} |`)

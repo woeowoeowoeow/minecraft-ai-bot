@@ -1,5 +1,6 @@
 // npm run eval -- --scenario m0 --n 10 [--parallel 1] [--limit 10m] [--reasoner scripted|none] [--replay <runId,...>] [--keep-world] [--label x]
 // npm run navbench -- --n 5 [--fixture kit]
+// npm run eval -- --scenario a --n 20 (milestone A: 45 min limit, reasoner none)
 // npm run inspect -- run <runId> | batch <batchId>
 import { existsSync } from 'node:fs'
 import { parseArgs } from 'node:util'
@@ -36,6 +37,7 @@ async function main (): Promise<void> {
       'keep-world': { type: 'boolean', default: false },
       label: { type: 'string' },
       fixture: { type: 'string' },
+      set: { type: 'string', default: 'heldout' },
     },
   })
   const scenario = ScenarioS.parse(values.scenario)
@@ -44,9 +46,9 @@ async function main (): Promise<void> {
     scenario,
     n: Number(values.n),
     parallel: Number(values.parallel),
-    limitMs: parseDuration(values.limit ?? (scenario === 'navbench' ? '25m' : '10m')),
+    limitMs: parseDuration(values.limit ?? (scenario === 'navbench' ? '25m' : scenario === 'a' ? '45m' : '10m')),
     reasoner: (values.reasoner ?? (scenario === 'm0' ? 'scripted' : 'none')) as 'none' | 'scripted',
-    set: values.replay ? 'replay' : 'heldout',
+    set: values.replay ? 'replay' : values.set === 'dev' ? 'dev' : 'heldout',
     replay: values.replay?.split(','),
     keepWorld: values['keep-world'],
     label: values.label,

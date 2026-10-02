@@ -5,7 +5,7 @@ import { RunSummaryS, type NavBenchTrial, type RunSummary } from '../../src/sche
 
 function run (id: string, over: Partial<RunSummary> = {}): RunSummary {
   const base: RunSummary = {
-    runId: id, batchId: 'b', seedSet: 'heldout-b', fixture: false, codeRev: 'x', dirty: false, mcVersion: '1.21.4',
+    runId: id, batchId: 'b', seedSet: 'heldout-b', fixture: false, codeRev: 'x', dirty: false, mcVersion: '1.16.1',
     config: { scenario: 'm0', reasoner: 'scripted', limitMin: 10, target: 'M0', fixture: null },
     startedAt: '', endedAt: '', outcome: 'goal_reached', outcomeReason: 'ok', elapsedS: 60,
     timing: { serverStartS: 10, botConnectS: 12, botRunS: 60, teardownS: 2 }, gameTicks: 1200,
@@ -84,8 +84,10 @@ describe('ground truth parsing', () => {
   })
 
   it('parses inventory SNBT from data get', () => {
-    const snbt = '[{count: 3, Slot: 0b, id: "minecraft:oak_log"}, {count: 1, Slot: 1b, id: "minecraft:crafting_table"}, {count: 2, Slot: 2b, id: "minecraft:oak_log"}]'
-    expect(parseInventoryData(snbt)).toEqual({ oak_log: 5, crafting_table: 1 })
+    // 1.16.1 format: byte counts, item tags after the count.
+    const snbt = '[{Slot: 0b, id: "minecraft:oak_log", Count: 3b}, {Slot: 1b, id: "minecraft:crafting_table", Count: 1b}, {Slot: 2b, id: "minecraft:oak_log", Count: 2b}, ' +
+      '{Slot: 3b, id: "minecraft:stone_pickaxe", Count: 1b, tag: {Damage: 17}}, {Slot: 4b, id: "minecraft:iron_sword", Count: 1b, tag: {Enchantments: [{lvl: 1s, id: "minecraft:sharpness"}], display: {Name: \'{"text":"a}b"}\'}}}]'
+    expect(parseInventoryData(snbt)).toEqual({ oak_log: 5, crafting_table: 1, stone_pickaxe: 1, iron_sword: 1 })
     expect(parseInventoryData('[]')).toEqual({})
   })
 })

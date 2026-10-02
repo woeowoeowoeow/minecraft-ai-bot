@@ -37,6 +37,31 @@ Verdicts: **USE** means depend on it as-is (pinned). **ADAPT** means borrow code
 | MineDojo | Malmo-based research env | Stale (2024); old MC | MIT | **REJECT** |
 | minecraft-mcp-server (yuniko) | MCP control over Mineflayer | Active (Apr 2026), 760★ | Apache-2.0 | **REJECT** as control; pattern reference for inspection tools |
 
+## 1.16.1 compatibility audit (2026-09-28)
+
+The target moved to vanilla **1.16.1** (PROJECT.md). Every current dependency was kept, because each one supports the older protocol. None was upgraded or downgraded.
+
+| Dependency (pinned) | 1.16.1 support | Evidence | Verdict |
+|---|---|---|---|
+| mineflayer 4.39.0 | Supported range 1.8.8–26.1. The CI matrix tests 1.16.5 (same major), not 1.16.1 | Real-server smoke: login, chunks, `bot.game.minY = 0` / `height = 256`, dimension `overworld`, walking with 0 corrections, own air metadata (key 1), inventory sync. Full 1.16.1 scenario suite and benchmarks (evaluation.md gate log) | **Keep** |
+| minecraft-data 3.117.0 | Native `pc/1.16.1` blocks, items, recipes, entities, collision shapes, protocol and loot (enchantments borrowed from 1.13.2). Entity categories are missing for piglin, hoglin, zoglin, zombified_piglin, strider, fox and bee (`UNKNOWN`) | `dataPaths.json`; 1.16.1 block names checked (kelp, seagrass, bubble_column, `grass` plant, `grass_path`; no deepslate, powder snow, raw ores, mangrove or cherry) | **Keep.** The category gaps are filled in `src/version.ts` |
+| minecraft-protocol 1.68.0 | Protocol 736 (1.16.1) available. Tested set includes 1.16.5 | Real-server login and play | **Keep** |
+| prismarine-physics 1.11.1 | Its own feature table maps major `1.16` to proportional liquid gravity, climbing by jump, trapdoor climbing and velocity blocks on top (soul sand, honey). Kelp, seagrass and bubble columns count as water | Source audit, water scenarios | **Keep.** The collision-epsilon patch (`src/nav/physics-epsilon.ts`) is version-independent and still applied |
+| mineflayer-pathfinder @6f5c26b | Uses `bot.registry` with guarded names (`cobweb`/`web`, `cave_air`, `void_air`) | Scenario suite on 1.16.1 | **Keep.** Our scaffold list dropped `cobbled_deepslate` |
+| minecraft-wrap 1.10.0 | `downloadServer('1.16.1')` works | sha1 of the downloaded jar = Mojang manifest `a412fd69…` | **Keep** |
+| prismarine-viewer (optional, not installed) | 1.16.1 has native assets | — | Unchanged (optional) |
+
+**Mineflayer behaviour that differs on 1.16.1:**
+- Every entity has `type: 'mob'`, so hostile and passive are told apart by `entity.kind`, the minecraft-data category (`src/observer/observer.ts`).
+- The `oxygenLevel` leak from other entities is specific to newer versions. On 1.16.1 Mineflayer uses its per-entity breath handler. `ownAir` still reads the bot's own metadata and is correct on both.
+- `bot.game.difficulty` is `undefined` after login on 1.16.1. Nothing reads it.
+- **No handling of `acknowledge_player_digging`** (the 1.14–1.18 block-break ack). Rejected or delayed breaks leave ghost air cells on the client. Fixed locally in `src/bot/protocol-fixes.ts`; a candidate upstream fix.
+- **`_syncWindow` is a no-op before 1.17.1** (`stateIdUsed`). Replaced for 1.16.1 by a server-rejected probe click (`resyncInventory`).
+
+**Java runtime.** Mojang's 1.16.1 manifest declares `javaVersion: {component: jre-legacy, majorVersion: 8}`. Only Temurin 21 and Zulu 11 were installed. `npm run setup` therefore installs a project-local Azul Zulu 8 JRE (GA, TCK-certified; for this host 8.0.504, macOS aarch64, SHA-256 verified against Azul's metadata) into `.cache/java/`. The evaluator invokes it by explicit path (`src/evaluation/java.ts`; override with `MC_JAVA`) and refuses any other major. Global Java and Node are unchanged. The 1.16.1 server starts in about 20 s at about 350 MB RSS (measured once, with a fresh world and one bot).
+
+**Security.** The 1.16.1 jar bundles log4j 2.8.1, which is vulnerable to Log4Shell. The server runs with `config/log4j2-server.xml`, the jar's own log config with `%msg{nolookups}`, matching Mojang's official 1.12–1.16.5 mitigation. It is bound to 127.0.0.1. Probe: `say ${java:version}` logs literally with the config and prints `Java version 1.8.0_504` without it.
+
 ## Details
 
 ### Control layer
@@ -84,10 +109,10 @@ Borrow its task decomposition, its survival-interrupt priorities, and its strong
 **prismarine-viewer — optional USE.** It has browser view (`mineflayer({port})`) for humans and `headless` rendering to video/frames for failure bundles. Native textures go up to 1.21.4, and later versions render with the nearest assets. Headless rendering needs native `node-canvas-webgl`/`gl` builds, which are fragile on new Node and macOS versions. Make it an optional dependency so a broken build can never block a run. Structured JSON remains the primary observation.
 
 ### Server, worlds, batch evaluation
-- **Vanilla server via minecraft-wrap — USE.** It downloads the official jar and starts and stops it programmatically; Mineflayer's own external tests run on it. Java 21 is already installed. A world reset means deleting the world directory and restarting with a new `level-seed`.
+- **Vanilla server via minecraft-wrap — USE.** It downloads the official jar and starts and stops it programmatically; Mineflayer's own external tests run on it. The 1.16.1 server runs on a project-local Java 8 (see the 1.16.1 audit above). A world reset means deleting the world directory and restarting with a new `level-seed`.
 - **Ground truth for the evaluator** comes from the server log: death messages, advancement lines such as `[Free the End]`, and dimension changes. The bot never sees this log.
 - **Paper** alters vanilla behavior, which would invalidate results. **Docker/itzg** is the scale-out option on Linux later.
-- **`/tick sprint`** (1.20.3+) would desync Mineflayer's client-side physics. Don't use it for scored runs.
+- **`/tick`** does not exist in 1.16.1. Game speed is never altered in scored runs.
 
 ### Coding-agent inspection
 Claude Code and Codex already read files and run commands, so an MCP server isn't needed at first. The evaluator should write JSONL events, `summary.json` and a failure bundle per run, and a small inspector CLI should summarize them. A localhost-only control endpoint (`observe`/`pause`) on the bot process covers live inspection. minecraft-mcp-server is a reasonable pattern if an MCP wrapper becomes useful later, but it exposes *control* to an LLM, which this project avoids at runtime.

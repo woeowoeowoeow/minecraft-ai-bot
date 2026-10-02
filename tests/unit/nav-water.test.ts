@@ -77,11 +77,33 @@ describe('routeToAir', () => {
 describe('dryStart', () => {
   it('moves an excavation start off a shoreline', () => {
     const v = pool(false)
-    const s = dryStart(v, [0.5, 63.2, 0.5])!
-    expect(s[1]).toBe(65)
-    expect(Math.max(Math.abs(s[0]), Math.abs(s[2]))).toBeGreaterThanOrEqual(6)
+    const s = dryStart(v, [0.5, 63.2, 0.5])
+    expect(s.kind).toBe('found')
+    const p = (s as { pos: [number, number, number] }).pos
+    expect(p[1]).toBe(65)
+    expect(Math.max(Math.abs(p[0]), Math.abs(p[2]))).toBeGreaterThanOrEqual(6)
   })
   it('keeps a start that is already dry', () => {
-    expect(dryStart(pool(false), [20.5, 65, 20.5])).toBeNull()
+    expect(dryStart(pool(false), [20.5, 65, 20.5])).toEqual({ kind: 'already_dry' })
+  })
+  it('reports none in open water (distinct from already dry)', () => {
+    const ocean = mapView((_x, y) => (y >= 64 ? 'air' : y >= 50 ? 'water' : 'sand'))
+    expect(dryStart(ocean, [0.5, 63.2, 0.5])).toEqual({ kind: 'none', radius: 12 })
   })
 })
+
+describe('dryStart exclusion (unreachable starts, dev batch 6 r01)', () => {
+  it('skips excluded cells and picks the next dry one', async () => {
+    const { dryStart } = await import('../../src/nav/water.js')
+    const { mapView } = await import('../../src/nav/blocks.js')
+    // Water column at the bot, dry ground everywhere else.
+    const view = mapView((x, y) => (y >= 64 ? 'air' : 'stone'), { '0,63,0': 'water', '0,64,0': 'water' })
+    const a = dryStart(view, [0, 64, 0])
+    expect(a.kind).toBe('found')
+    const first = (a as { pos: [number, number, number] }).pos
+    const b = dryStart(view, [0, 64, 0], 12, c => c.join(',') === first.join(','))
+    expect(b.kind).toBe('found')
+    expect((b as { pos: [number, number, number] }).pos).not.toEqual(first)
+  })
+})
+

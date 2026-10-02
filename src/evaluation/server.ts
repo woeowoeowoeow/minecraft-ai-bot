@@ -2,26 +2,30 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { createWriteStream, mkdirSync, writeFileSync, type WriteStream } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ProcessRegistry } from './procs.js'
 import { terminate, waitExit } from './procs.js'
 
-export const MC_VERSION = '1.21.4'
+export { MC_VERSION } from '../version.js'
 
-/** Fixed per-batch server settings (evaluation.md §2.6). Recorded in batch.json. */
+/**
+ * Fixed per-batch server settings (evaluation.md §2.6). Recorded in batch.json.
+ * Only keys the 1.16.1 server reads: `simulation-distance` (1.18) and
+ * `enforce-secure-profile` (1.19) do not exist yet, and 1.16.1 names level
+ * types `default`/`flat` (the `minecraft:normal` form is 1.19+).
+ */
 export const SERVER_PROPERTIES: Record<string, string> = {
   'online-mode': 'false',
   difficulty: 'normal',
   gamemode: 'survival',
   'view-distance': '10',
-  'simulation-distance': '10',
   'enable-command-block': 'false',
   'spawn-protection': '0',
   'max-players': '4',
   'player-idle-timeout': '0',
-  'enforce-secure-profile': 'false',
   'generate-structures': 'true',
   'allow-nether': 'true',
-  'level-type': 'minecraft\\:normal',
+  'level-type': 'default',
   'sync-chunk-writes': 'false',
   'enable-rcon': 'false',
   'enable-query': 'false',
@@ -35,12 +39,17 @@ export type ServerOptions = {
   seed: string
   jarPath: string
   memMb?: number
+  /** Java executable for the vanilla server (src/evaluation/java.ts); required unless `command` is set. */
+  javaBin?: string
   /** Replace the java command (tests use a fake server). */
   command?: { cmd: string; args: string[] }
   readyTimeoutMs?: number
   /** Fixture scenarios only (never scored batches): overrides for SERVER_PROPERTIES. */
   properties?: Record<string, string>
 }
+
+/** Log4Shell-safe copy of the jar's own log config (see the file's header). */
+export const LOG4J_CONFIG = fileURLToPath(new URL('../../config/log4j2-server.xml', import.meta.url))
 
 const READY_RE = /\]: Done \([\d.]+s\)!/
 const FATAL_RE = /FAILED TO BIND TO PORT|Failed to start the minecraft server|Exception in server tick loop|has been compiled by a more recent version/
@@ -72,7 +81,8 @@ export class ServerProcess extends EventEmitter {
   async start (): Promise<void> {
     this.writeConfig()
     const mem = this.o.memMb ?? 2048
-    const { cmd, args } = this.o.command ?? { cmd: 'java', args: [`-Xms${Math.min(1024, mem)}M`, `-Xmx${mem}M`, '-jar', this.o.jarPath, 'nogui'] }
+    if (!this.o.command && !this.o.javaBin) throw new Error('ServerProcess: javaBin is required')
+    const { cmd, args } = this.o.command ?? { cmd: this.o.javaBin!, args: [`-Xms${Math.min(1024, mem)}M`, `-Xmx${mem}M`, `-Dlog4j.configurationFile=${LOG4J_CONFIG}`, '-jar', this.o.jarPath, 'nogui'] }
     this.log = createWriteStream(this.logPath, { flags: 'a' })
     const child = spawn(cmd, args, { cwd: this.o.worldDir, stdio: ['pipe', 'pipe', 'pipe'] })
     this.child = child

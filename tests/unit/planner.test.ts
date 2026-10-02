@@ -1,4 +1,7 @@
+import mcData from 'minecraft-data'
 import { describe, expect, it } from 'vitest'
+import { MC_VERSION } from '../../src/version.js'
+import progression from '../../config/progression.json' with { type: 'json' }
 import { M0_REQUIREMENTS, MILESTONES, planksFor, unmetObjectives } from '../../src/planner/policy.js'
 import { NoModelReasoner, ScriptedReasoner, validateDecision } from '../../src/planner/reasoner.js'
 import type { DecisionRequest } from '../../src/schema/index.js'
@@ -21,9 +24,25 @@ describe('M0 policy', () => {
 
   it('crafts planks matching the logs actually held', () => {
     expect(planksFor(fakeState({ inventory: { spruce_log: 3, oak_log: 1 } }))).toBe('spruce_planks')
-    expect(planksFor(fakeState({ inventory: { stripped_cherry_log: 2 } }))).toBe('cherry_planks')
-    const o = unmetObjectives(M0_REQUIREMENTS, fakeState({ inventory: { mangrove_log: 4 } }))[0]!
-    expect(o.params).toEqual({ item: 'mangrove_planks', count: 4 })
+    expect(planksFor(fakeState({ inventory: { stripped_acacia_log: 2 } }))).toBe('acacia_planks')
+    const o = unmetObjectives(M0_REQUIREMENTS, fakeState({ inventory: { dark_oak_log: 4 } }))[0]!
+    expect(o.params).toEqual({ item: 'dark_oak_planks', count: 4 })
+  })
+
+  it('progression config targets the pinned version', () => {
+    expect(progression.mcVersion).toBe(MC_VERSION)
+  })
+
+  it('every 1.16.1 log maps to a craftable 1.16.1 planks item', () => {
+    const d = mcData(MC_VERSION)
+    const logs = d.blocksArray.map(b => b.name).filter(n => n.endsWith('_log'))
+    expect(logs.length).toBeGreaterThanOrEqual(12) // 6 woods × (log, stripped log)
+    for (const log of logs) {
+      const planks = planksFor(fakeState({ inventory: { [log]: 1 } }))
+      const item = d.itemsByName[planks]
+      expect(item, `${log} → ${planks}`).toBeDefined()
+      expect(d.recipes[item!.id]?.length, `recipe for ${planks}`).toBeGreaterThan(0)
+    }
   })
 
   it('M0 predicate is crafting_table in inventory', () => {

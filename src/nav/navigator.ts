@@ -16,6 +16,8 @@ export interface Navigator {
   budgetMs (goal: NavGoal): number
   /** Diagnostics of the most recent calls, for failure bundles (nav.json). */
   recent (): NavResult[]
+  /** Get the head out of water (swim up or along the route to open air). False if it never clears. Survival reflex (P0). */
+  surface (): Promise<boolean>
 }
 
 /** Contract timeout for `navigate` (architecture §6.3): 20 s + 1.5 s/block. */

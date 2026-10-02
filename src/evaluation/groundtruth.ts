@@ -31,13 +31,48 @@ export function parseServerLine (line: string, username: string, t: number): Gro
   return null
 }
 
-/** Parses the SNBT list from `data get entity <name> Inventory` into item → count. */
+/** Top-level `{…}` compounds of an SNBT list (nested tags stay inside their item). */
+function topLevelCompounds (snbt: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let start = -1
+  let quoted = false
+  for (let i = 0; i < snbt.length; i++) {
+    const c = snbt[i]
+    if (c === '"' && snbt[i - 1] !== '\\') quoted = !quoted
+    if (quoted) continue
+    if (c === '{' && depth++ === 0) start = i
+    else if (c === '}' && --depth === 0) out.push(snbt.slice(start, i + 1))
+  }
+  return out
+}
+
+/**
+ * Parses the SNBT list from `data get entity <name> Inventory` into item → count.
+ * 1.16.1 prints `{Slot: 0b, id: "minecraft:oak_log", Count: 4b}`, with any
+ * `tag: {…}` (damage, enchantments) after the count.
+ */
 export function parseInventoryData (snbt: string): Record<string, number> {
   const inv: Record<string, number> = {}
-  for (const item of snbt.match(/\{[^{}]*\}/g) ?? []) {
+  for (const item of topLevelCompounds(snbt)) {
     const id = item.match(/id: "minecraft:([a-z0-9_]+)"/)?.[1]
-    const count = Number(item.match(/count: (\d+)/)?.[1] ?? '1')
-    if (id) inv[id] = (inv[id] ?? 0) + count
+    const count = item.match(/\bCount: (\d+)b/)?.[1]
+    if (id && count) inv[id] = (inv[id] ?? 0) + Number(count)
   }
   return inv
+}
+
+const COOKED = /^(cooked_(beef|porkchop|chicken|mutton|rabbit|cod|salmon)|baked_potato)$/
+
+/**
+ * Server-side check of nether_ready's inventory clauses (milestones.md A). The
+ * lava-pool half of option B is bot memory and cannot be checked from the
+ * inventory; a water bucket stands in for it here.
+ */
+export function netherReadyInventory (inv: Record<string, number>): boolean {
+  const n = (k: string) => inv[k] ?? 0
+  const armor = ['iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'].filter(k => n(k) > 0).length
+  const cooked = Object.entries(inv).filter(([k]) => COOKED.test(k)).reduce((a, [, v]) => a + v, 0)
+  return n('iron_pickaxe') >= 1 && n('iron_sword') >= 1 && n('shield') >= 1 && n('bucket') >= 1 && armor >= 2 &&
+    n('flint_and_steel') >= 1 && cooked >= 10 && (n('obsidian') >= 10 || n('water_bucket') >= 1)
 }

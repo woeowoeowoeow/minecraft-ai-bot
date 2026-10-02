@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { botEnv } from '../../src/evaluation/run.js'
 
 const SRC = join(import.meta.dirname, '..', '..', 'src')
-const BOT_SIDE = ['bot', 'nav', 'observer', 'skills', 'controller', 'planner', 'telemetry', 'schema']
+const BOT_SIDE = ['bot', 'nav', 'observer', 'skills', 'controller', 'planner', 'recovery', 'telemetry', 'schema']
 
 function files (dir: string): string[] {
   return readdirSync(dir).flatMap(f => {

@@ -10,10 +10,10 @@ import { Vec3 } from 'vec3'
  * meadows look like walkable sea floor).
  */
 export const WATER_LIKE = new Set(['water', 'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass', 'bubble_column'])
-/** Passable but harmful to stand in. */
-export const HARMFUL_PASSABLE = new Set(['fire', 'soul_fire', 'cobweb', 'sweet_berry_bush', 'powder_snow', 'wither_rose'])
+/** Passable but harmful to stand in (1.16.1 block names). */
+export const HARMFUL_PASSABLE = new Set(['fire', 'soul_fire', 'cobweb', 'sweet_berry_bush', 'wither_rose'])
 /** Solid, but harmful to stand on. */
-export const HARMFUL_FLOOR = new Set(['magma_block', 'campfire', 'soul_campfire', 'pointed_dripstone'])
+export const HARMFUL_FLOOR = new Set(['magma_block', 'campfire', 'soul_campfire'])
 
 export type CellKind = 'air' | 'solid' | 'water' | 'lava' | 'harmful' | 'unknown'
 
@@ -33,7 +33,7 @@ export interface BlockView {
 }
 
 const UNKNOWN: Cell = { name: 'unloaded', kind: 'unknown', gravity: false, digMs: Infinity, wantsPickaxe: false }
-const GRAVITY = new Set(['sand', 'red_sand', 'gravel', 'suspicious_sand', 'suspicious_gravel'])
+const GRAVITY = new Set(['sand', 'red_sand', 'gravel'])
 const GRAVITY_RE = /concrete_powder$|anvil$/
 
 export function classify (b: Pick<Block, 'name' | 'boundingBox'> & { waterlogged?: boolean }, digMs: number, wantsPickaxe: boolean): Cell {
@@ -81,8 +81,9 @@ export function mapView (fill: (x: number, y: number, z: number) => string, cell
     at (x, y, z) {
       const name = cells[`${x},${y},${z}`] ?? fill(x, y, z)
       if (name === 'unloaded') return UNKNOWN
-      const empty = name === 'air' || name === 'cave_air' || WATER_LIKE.has(name) || name === 'lava' || HARMFUL_PASSABLE.has(name) || name === 'short_grass' || name === 'torch'
-      return classify({ name, boundingBox: empty ? 'empty' : 'block' }, empty ? 0 : digMsFor(name), /stone|deepslate|ore|granite|diorite|andesite|tuff/.test(name))
+      // `grass` is the 1.16.1 plant (the block is `grass_block`).
+      const empty = name === 'air' || name === 'cave_air' || WATER_LIKE.has(name) || name === 'lava' || HARMFUL_PASSABLE.has(name) || name === 'grass' || name === 'torch'
+      return classify({ name, boundingBox: empty ? 'empty' : 'block' }, empty ? 0 : digMsFor(name), /stone|ore|granite|diorite|andesite/.test(name))
     },
   }
 }

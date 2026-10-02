@@ -99,11 +99,18 @@ export function routeToAir (view: BlockView, pos: V3, maxNodes = 600): V3[] | nu
   return null
 }
 
+/** Where excavation may start: here, at the nearest dry cell, or nowhere within reach. */
+export type DryStart =
+  | { kind: 'already_dry' }
+  | { kind: 'found'; pos: V3 }
+  | { kind: 'none'; radius: number }
+
 /**
- * Nearest dry cell to start excavating from: standable, nothing liquid in or
- * around the body or under the floor, within `radius`. Null if `pos` is already fine.
+ * Where to start excavating: standable, nothing liquid in or around the body or
+ * under the floor. `already_dry` if `pos` qualifies, else the nearest such cell
+ * within `radius` (`found`), else `none` (e.g. open ocean): never start in water.
  */
-export function dryStart (view: BlockView, pos: V3, radius = 12): V3 | null {
+export function dryStart (view: BlockView, pos: V3, radius = 12, exclude: (c: V3) => boolean = () => false): DryStart {
   const ok = (x: number, y: number, z: number) => {
     if (!standable(view, x, y, z)) return false
     for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -2, 0]] as const) {
@@ -119,7 +126,7 @@ export function dryStart (view: BlockView, pos: V3, radius = 12): V3 | null {
     return true
   }
   const [px, py, pz] = pos.map(Math.floor) as V3
-  if (ok(px, py, pz)) return null
+  if (ok(px, py, pz)) return { kind: 'already_dry' }
   let best: V3 | null = null
   let bestD = Infinity
   for (let dx = -radius; dx <= radius; dx++) {
@@ -127,9 +134,9 @@ export function dryStart (view: BlockView, pos: V3, radius = 12): V3 | null {
       for (let dy = -3; dy <= 4; dy++) {
         const d = Math.hypot(dx, dz) + Math.abs(dy) * 0.5
         if (d >= bestD) continue
-        if (ok(px + dx, py + dy, pz + dz)) { best = [px + dx, py + dy, pz + dz]; bestD = d }
+        if (ok(px + dx, py + dy, pz + dz) && !exclude([px + dx, py + dy, pz + dz])) { best = [px + dx, py + dy, pz + dz]; bestD = d }
       }
     }
   }
-  return best
+  return best ? { kind: 'found', pos: best } : { kind: 'none', radius }
 }

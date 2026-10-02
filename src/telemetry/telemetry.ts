@@ -86,6 +86,11 @@ export class Telemetry {
     return rel
   }
 
+  /** Current state digest (architecture §8.2), for events that carry one. */
+  digest (): StateDigest | null {
+    try { return this.src.digest() } catch { return null }
+  }
+
   /**
    * Failure bundle (architecture §9): state, digest, events tail, trace tail,
    * skill stack, nav diagnostics, voxel slice. Returns its path relative to RUN_DIR.

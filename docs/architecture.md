@@ -1,6 +1,6 @@
 # Architecture
 
-Phase 2 design for the stack chosen in [proposed-stack.md](proposed-stack.md): headless Mineflayer bot on a vanilla Java **1.21.4** server, in Node 22 / TypeScript. Milestones are in [milestones.md](milestones.md) and evaluation is in [evaluation.md](evaluation.md).
+Phase 2 design for the stack chosen in [proposed-stack.md](proposed-stack.md): headless Mineflayer bot on a vanilla Minecraft Java Edition **1.16.1** server (run on Java 8), in Node 22 / TypeScript. 1.16.1 is the sole target version; §14 lists the 1.16.1 game facts that later milestones depend on. Milestones are in [milestones.md](milestones.md) and evaluation is in [evaluation.md](evaluation.md).
 
 ## 1. Principles
 
@@ -23,7 +23,7 @@ Phase 2 design for the stack chosen in [proposed-stack.md](proposed-stack.md): h
 └───────────────┬───────────────────────────────┬──────────────┘
                 │ TCP (Minecraft protocol)      │ child process + files
 ┌───────────────▼──────────┐   ┌────────────────▼───────────────────────────┐
-│ Vanilla 1.21.4 server     │   │ Bot process (src/bot … src/telemetry)       │
+│ Vanilla 1.16.1 (Java 8)   │   │ Bot process (src/bot … src/telemetry)       │
 │ online-mode=false, no ops │◄──┤ Mineflayer + plugins                         │
 │ difficulty=normal         │   │ Navigator · Observer · Controller · Skills   │
 └───────────────────────────┘   │ Planner · Recovery · Reasoner · Telemetry    │
@@ -111,12 +111,12 @@ An interrupt ends when its condition clears. The objective skill is then **re-is
 ```text
 wood_tools → stone_tools → food_buffer(≥10 cooked) → iron_tools(pick, sword) → bucket
 → iron_armor(partial ok) → shield → flint_and_steel → obsidian(10) | lava_cast → nether_portal
-→ enter_nether → fortress_located → blaze_rods(≥7) → ender_pearls(≥14) [barter | endermen]
-→ return_overworld → eyes_of_ender(≥14) → stronghold_located → portal_room → end_portal_open
-→ enter_end → beds(≥6) → dragon_dead
+→ enter_nether → gold(barter stock) → ender_pearls(≥14) [barter | endermen]
+→ fortress_located → blaze_rods(≥7) → return_overworld → eyes_of_ender(≥14)
+→ stronghold_located → portal_room → end_portal_open → enter_end → beds(≥6) → dragon_dead
 ```
 
-The targets (7 rods, 14 pearls/eyes, 6 beds) live in `config/progression.json`. They are generic margins for breakage and misses, not tuned to any seed.
+The targets (7 rods, 14 pearls/eyes, 6 beds) live in `config/progression.json`, which declares the version it was written for (`mcVersion`, checked against `src/version.ts` by a unit test). The gold stock for bartering is set in milestone C from the measured barter yield (§14.2). They are generic margins for breakage and misses, not tuned to any seed. In 1.16.1, pearls come before blaze rods because bartering is the primary pearl source (§14.2) and it happens wherever piglins are. Both remain one Nether trip.
 
 ```ts
 type Objective = {
@@ -130,8 +130,9 @@ type Objective = {
 ```
 
 The **strategy catalog** gives each objective an ordered list of strategies. Each strategy has an applicability predicate and a cost estimate. For example:
-- `ender_pearls`: `[barter_gold (if bastion known & gold ≥ 32), hunt_endermen, barter_gold]`
-- `obsidian`: `[lava_cast (bucket + lava pool known), mine_diamond_pick]`
+- `ender_pearls`: `[barter_gold (piglins in view & gold ≥ stock), hunt_endermen (warped forest / Overworld nights), barter_gold after restocking]`
+- `gold`: `[nether_gold_ore (any pickaxe, 2–6 nuggets each), bastion_loot (gold blocks / chests), overworld_gold_ore (iron pickaxe, smelt)]`
+- `obsidian`: `[lava_cast (bucket + lava pool known), complete_ruined_portal (lava cast into the missing frame), mine_diamond_pick]`
 - `fortress_located`: `[axis_sweep, spiral_explore]`
 
 The policy uses the first applicable strategy that hasn't been exhausted. **Ambiguity** is flagged when two applicable strategies' cost estimates are within 20%, or when none is applicable. Only in that case does it return `AWAIT_DECISION` (if a reasoner is enabled). Otherwise it picks deterministically.
@@ -275,7 +276,7 @@ Rules:
 | `buildNetherPortal` | `method: lava_cast\|obsidian` | lit portal within 4 blocks, location stored | MISSING_RESOURCE, NOT_FOUND (lava), STATE_INCONSISTENT | 6 min |
 | `findFortress` | `strategy` | nether bricks in loaded chunks, location stored | SEARCH_EXHAUSTED, NAV_HAZARD | 12 min |
 | `collectBlazeRods` | `count` | rods ≥ count | COMBAT_DANGER, NOT_FOUND (spawner) | 12 min |
-| `barterPearls` | `count, goldBudget` | pearls ≥ count | MISSING_RESOURCE (gold), NOT_FOUND (piglins), COMBAT_DANGER | 10 min |
+| `barterPearls` | `count, goldBudget` | pearls ≥ count (1.16.1: ≈ 0.28 pearls per ingot, §14.2) | MISSING_RESOURCE (gold), NOT_FOUND (piglins), COMBAT_DANGER | 10 min |
 | `locateStronghold` | — | `stronghold_est` stored from 2 eye throws ≥ 200 blocks apart with crossing angle ≥ 10° | STATE_INCONSISTENT (eye not tracked), MISSING_RESOURCE | 10 min + travel |
 | `enterStrongholdPortal` | `estimate` | in End | SEARCH_EXHAUSTED (frame not seen), MISSING_RESOURCE (eyes) | 15 min |
 | `killDragon` | `strategy: bed_perch\|melee_perch` | dragon entity dead, or exit-portal activation observed | DEATH, COMBAT_DANGER, MISSING_RESOURCE (beds) | 20 min |
@@ -321,7 +322,7 @@ L5 terminate   STRATEGY_EXHAUSTED at a required objective with no L4 answer, or
 Special cases:
 - `COMBAT_DANGER` goes straight to the P1 interrupt (`flee`, then `eat`, then `shelter`) and then L2. It is not escalated until it repeats.
 - `MISSING_RESOURCE` is not a real failure. The planner inserts an `obtain` sub-objective. It only escalates if `obtain` itself fails.
-- `STATE_INCONSISTENT` always runs a resync first: close windows, wait 1 s, compare inventory. If the error persists, reconnect once.
+- `STATE_INCONSISTENT` always runs a resync first: close windows, wait 1 s, compare inventory. If the error persists, reconnect once. On 1.16.1 the inventory resync is a server-rejected probe click, which makes the server resend the window (evaluation.md, implementation notes). Mineflayer's built-in sync needs the 1.17.1+ protocol.
 - **Milestone watchdog:** each milestone has a time budget (config). When exceeded, Recovery raises `STALLED` at the milestone level, which starts at L3.
 
 ### 7.3 Terminate criteria
@@ -363,9 +364,9 @@ type WorldMemory = {
 }
 ```
 
-`LocationKind`: `spawn`, `bed`, `crafting_table`, `furnace`, `chest`, `lava_pool`, `village`, `portal_ow`, `portal_nether`, `fortress`, `blaze_spawner`, `bastion`, `stronghold_est`, `end_portal`, `death`.
+`LocationKind`: `spawn`, `bed`, `crafting_table`, `furnace`, `chest`, `lava_pool`, `village`, `ruined_portal`, `portal_ow`, `portal_nether`, `fortress`, `blaze_spawner`, `bastion`, `stronghold_est`, `end_portal`, `death`.
 
-The **interest index** is maintained by the observer. It holds a set of block names, and the set is the union of a base list (lava, obsidian, logs, ores, nether_bricks, end_portal_frame, ...) and whatever the active objective declares. The index is updated on `chunkColumnLoad` and on block updates. It keeps the nearest 16 positions per kind. Raw chunk data never leaves Mineflayer.
+The **interest index** is maintained by the observer. It holds a set of block names, and the set is the union of a base list and whatever the active objective declares. The base list uses 1.16.1 names: lava, obsidian, logs, ores (no deepslate variants), nether_gold_ore, nether_bricks, polished_blackstone_bricks, gilded_blackstone, end_portal_frame, and so on. The index is updated on `chunkColumnLoad` and on block updates. It keeps the nearest 16 positions per kind. Raw chunk data never leaves Mineflayer.
 
 **Milestone flags** are pure predicates over `WorldState` in `src/planner/milestones.ts`, evaluated at 1 Hz. The first transition emits a `milestone` event. Examples: `has_iron_pick`, `nether_ready`, `in_nether`, `fortress_found`, `rods_7`, `pearls_14`, `eyes_14`, `stronghold_located`, `in_end`, `dragon_dead`.
 
@@ -454,7 +455,13 @@ Everything below lives in `src/nav` and is pathfinder-agnostic unless noted. Cal
   - a 2-high tunnel step;
   - a stair-up step.
 
-  Every candidate is rejected if any block it opens has lava or water beside it, if the landing is more than 3 blocks down or sits on lava or magma, if the standing space touches lava, if a block is unbreakable or impractical to dig (> 3 s), or if it revisits a cell. Blocks that need a pickaxe fail as `MISSING_RESOURCE` with `missing: wooden_pickaxe`, and so does starting without a pickaxe. Excavation never starts in or beside water: it first walks to the nearest dry cell (`dryStart`). The dug staircase or tunnel is the return path (verified by a scenario test: the pathfinder walks back out). Progress and failures are structured: `excavation {steps, dug, falls, byKind, entry, lastBlocked}` and `reason`.
+  Every candidate is rejected if any block it opens has lava or water beside it, if the landing is more than 3 blocks down or sits on lava or magma, if the standing space touches lava, if a block is unbreakable or impractical to dig (> 3 s), or if it revisits a cell. Blocks that need a pickaxe fail as `MISSING_RESOURCE` with `missing: wooden_pickaxe`, and so does starting without a pickaxe. Excavation never starts in or beside water. `dryStart` has three distinct outcomes, recorded as `NavDiag.dryStart`:
+  - `already_dry`: excavate here;
+  - `found`: walk to the nearest dry cell first;
+  - `none`: no dry cell within 12 blocks, e.g. open ocean; the call fails at once with `NAV_HAZARD`.
+
+  Before 2026-09-28, `already_dry` and `none` were the same `null`, so excavation started in open water.
+- **Falling blocks.** After a step's dig pass, the excavator waits for falling sand or gravel over the step's cells to land. It then re-verifies every cell the step needs open and re-digs refills, up to 5 passes (`excavation.refills`). Before this, a cell read as air while the sand was still falling, the sand landed after the pass, and the bot stood one block above its target. That was the `excavation steps keep failing` signature, reproduced by the sand-layer fixture. The dug staircase or tunnel is the return path (verified by a scenario test: the pathfinder walks back out). Progress and failures are structured: `excavation {steps, dug, falls, byKind, entry, lastBlocked}` and `reason`.
 - **Water model (in `pathfinder.ts`, Movements overrides).**
   - Kelp, seagrass and bubble columns count as water. Upstream treats them as walkable air and plans sea-floor routes.
   - No search node may have its head under water, and a submerged node can only move up.
@@ -470,7 +477,203 @@ Everything below lives in `src/nav` and is pathfinder-agnostic unless noted. Cal
 - **Physics robustness.**
   - `physics-epsilon.ts` adds vanilla's 1e-7 tolerance to prismarine-physics collision. Without it, float error lets the client box clip into a flush wall, and the server rejects every move (the M0 rubber-band loop).
   - A server-correction-loop detector (≥ 8 corrections in 1.5 s) re-centres the bot in its cell.
-- **Tests.** Pure planners have unit tests (`tests/unit/nav-*.test.ts`). `npm run test:scenario` builds water and underground fixtures on a real flat server (`tests/scenario/`); these runs are labeled fixtures and never scored.
+- **Perched on a lip.** A hitbox can overlap a neighbouring block by millimetres, so the bot stands on its edge above an open feet cell. Each step's centring move sneaks, and sneaking never leaves an edge, so every step failed. That was the remaining `excavation steps keep failing` signature on 1.16.1 (excavation fixture r01).
+  - Centring now sneaks only over a floor.
+  - Before planning a step, a perched bot drops into its feet cell if the landing passes the normal landing checks (`excavation.unperched`).
+  - Otherwise it plans from the lip without centring.
+- **Dig acknowledgements (`src/bot/protocol-fixes.ts`, 1.14–1.18 protocol).** Mineflayer marks a dug block as air as soon as it sends "finish digging", and it ignores the server's `acknowledge_player_digging`.
+  - A 1.16 server that counts too few ticks for a dig acks it with the block still present and breaks it later. Too few ticks happens when the server lags or the bot is airborne.
+  - If a second early finish arrives while the first break is still pending, the second block is never broken.
+  - The client then keeps a ghost air cell, walks into it, and the server silently teleports it back. This was the field signature `excavation steps keep failing` with about 160 corrections, in kit r04.
+  - `installDigAck` applies the acknowledged state whenever it differs from the client's, as the vanilla client does, and emits `dig_ack_correction`. A real-server fixture reproduces the ghost block without the fix and passes with it.
+- **Version isolation.** Block and item names in `src/nav` are 1.16.1 names. There is no deepslate, powder snow or dripstone; the plant is `grass` and the block `grass_block`. Version facts minecraft-data lacks live in `src/version.ts`.
+- **Tests.** Pure planners have unit tests (`tests/unit/nav-*.test.ts`). `npm run test:scenario` runs 23 real-server fixtures on a 1.16.1 flat world (`tests/scenario/`). They cover water entry and exit, kelp and seagrass, surfacing, ledge and flush exits, bridging, a 1-wide staircase (collision epsilon), server-teleport recovery, staircase and tunnel excavation, lava and water pockets, falling sand, the lip case, no-dry-start, the return route, inventory resync and ghost blocks. These runs are labeled fixtures and never scored.
+
+### 10.2 Milestone A safety debts (closed 2026-09-28)
+
+The three open navigation items from the 1.16.1 migration were fixed narrowly, before any progression work:
+- **Hazard-aware unstick** (`src/nav/hazards.ts`, `unstickDirections`). A reflex move is only taken in a cardinal direction whose entered cells, jump cell and landing (≤ 3 down) are free of lava, fire, magma and flowing lava beside the body. Forward is preferred on the first attempt and backward on later ones. With no safe direction the bot only jumps in place. The head-height dig never opens a block next to lava or water. Unit-tested with block maps (`tests/unit/nav-hazards.test.ts`).
+- **Air reflex in `exitWater`.** Every wait inside a shoreline exit (approach, lip digging, jump-out) checks the head and air supply with the same `needsAir` rule as `runLeg` and surfaces first. If surfacing fails, the exit is abandoned as `NAV_HAZARD` (`cannot surface during water exit`) instead of drowning mid-exit.
+- **Independent underground benchmark setup** (`src/controller/navbench.ts`). Before a `cave` or `depth` trial, if no dry excavation start is within reach (`dryStart` = `none`, e.g. the previous surface leg ended in ocean), the bot first walks back to its spawn as a setup move. If that fails, the trial is recorded as `SETUP_FAILED` and is excluded from the rate like `NO_TARGET`.
+
+No new pathfinder evaluation was run. Dev-batch evidence (evaluation.md) did not show navigation as the limiting component.
+
+## 10A. Milestone A implementation (as built)
+
+This section records how §4–§7 were realised for milestone A. It changes no component boundaries.
+
+**Controller** (`src/controller/progression.ts`, `interrupts.ts`). `ProgressionController` is the §4.2 loop.
+- The objective skill runs through `runPreemptible`: a 250 ms poll asks `selectInterrupt` and cancels the skill when a strictly higher-priority interrupt appears. The objective is then re-issued from scratch.
+- Milestones and funnel flags are checked at 1 Hz. Reaching the target cancels whatever runs.
+- Interrupt failures set a per-kind cooldown (for example `defend:<id>` 20 s, after which the same mob gets `flee`). An interrupt that fires more than 25 times in 60 s is throttled for 30 s.
+- P0 and P1 interrupt failures are recorded in `failures.jsonl` with ladder level `P0`/`P1`. P2 misses are not.
+- The M0 scenario keeps the original `Controller` (scripted reasoner), so the M0 gate code path is unchanged.
+
+**Interrupts** (pure, `selectInterrupt(state)`):
+- **P0:** feet or head in lava or fire → `escapeLava` (runs to the nearest `safeCells` cell, preferring higher ground). Head in water with air < 12/20 → `surfaceForAir` (the navigator's `surface()`). Head inside a solid block → `escapeSuffocation`.
+- **P1:** the threat score (below) says engage → `defend` or `flee`.
+- **P2:**
+  - `shelter` at night when there is nothing to fight with and hostiles are within 20;
+  - `eat` (food ≤ 14, or health ≤ 14 with food < 18);
+  - `equipGear` (better armor, shield to the off-hand);
+  - `manageInventory` (≤ 1 free slot: toss junk and surplus);
+  - `pickupDrops` for useful items, never bulk blocks while a self-collecting skill runs.
+- **Falls.** Fall damage is prevented by movement limits (pathfinder max drop 4, excavation max fall 3, hazard-checked reflex steps). An in-flight water-bucket clutch was not built: it is not needed for the predicate, and dev batch 1 had one fall death in 9.
+
+**Threat score** (`src/skills/survival/threat.ts`). Each 1.16.1 mob has a weight and a range in `version.ts` `MOB_THREATS`:
+- Ranged mobs (skeleton, stray, pillager, witch, and drowned holding a trident) count within their range. Melee mobs count within 10 blocks, scaled by distance.
+- Neutral mobs count only up close. Spiders count only in the dark. Zombified piglins never count.
+- Mobs without line of sight count only within 2.5 blocks. A swelling creeper doubles its weight.
+- Capacity is `2.2 × hp/20 × (1 + armor/12) × (weapon dps/8)^1.5 × shield 1.25 × water 0.6`.
+- The bot defends when threat ≤ capacity (× 1.6 when the primary threat is explosive) and flees otherwise, or whenever health ≤ 6.
+- Bare hands (4 dps) never take on a zombie; a stone sword does.
+
+**Acquisition** (`src/skills/sources.ts`, `generic/obtain.ts`). `planObtain(item, count, inventory, hints)` is a pure, depth-bounded (10), cycle-checked resolver:
+- The source table covers craft (minecraft-data recipes, variants normalised to groups: `planks`, `log`, `coal_any`), smelt (`version.ts` `SMELTING`), gather (collect or mine, with the pickaxe tier the block needs), hunt, and fill.
+- It simulates the inventory with reservations, so shared inputs are never double-counted, and every step carries an absolute, goal-shaped target.
+- All gathers of one material are folded into its first occurrence (one trip).
+- Fuel is coal when coal ore is known, else planks (a log burns 1.5 items, its planks 6).
+
+`obtain` runs **the first step only and re-resolves**. World hints change on the way: coal ore seen while mining means coal fuel instead of a surface trip. A broken pickaxe or a lost table simply reappears as a step. Recoverable child failures (`MISSING_RESOURCE`, `STATE_INCONSISTENT`) re-plan up to 4 times. A step that "succeeds" three times without changing the plan is a `STATE_INCONSISTENT` loop. After success, `obtain` digs up a crafting table it placed, so the table is carried into the mine.
+
+**Mining** (`generic/mine.ts`).
+- Targets come from the interest index: loaded chunk data, as §8.1 specifies. This includes ores not exposed to air (see the note in milestones.md).
+- Candidates are skipped when digging them would open lava or water, and penalised at or below the lava level (y ≤ 10).
+- Buried targets are reached by controlled excavation (`NavGoal.mode = 'excavate'`), never by cave pathfinding. Exposed, roughly level ones are reached by walking.
+- The bot never digs its own column below its feet. With nothing in range it descends in 8-block excavation steps toward y 16, then tunnels (`Searcher`).
+- The first descent is remembered as `mine_entry`. `toSurface` walks back up the dug staircase for surface work (hunting, trees, water).
+- Tools: `nav/tools.ts` picks a tool that makes the block drop, never a sword, and charges iron-and-better tools 1.6× so stone pickaxes wear first. A damageable item is unequipped for hand digging.
+- A broken pickaxe fails the mine step with `MISSING_RESOURCE`, and `obtain` crafts a replacement (scenario-tested). The policy's mining kit asks for ≥ 250 remaining pickaxe durability and 4 sticks before the iron trip.
+
+**Other generic skills.**
+- `smelt`: finds or places a furnace; counts from the furnace window while it is open, because Mineflayer copies the window back into `bot.inventory` only on close; loads the best fuel; resumes from furnace contents; carries the furnace on.
+- `hunt`: food animals, never babies (1.16.1 metadata index 15), chase with the navigator's entity goal, collect drops.
+- `fillBucket`: an open water source, raytraced by the server from the bot's view.
+- `explore` / `relocate`: 48-block surface steps, or 24-block tunnels under cover.
+- `findLavaPool`: excavate to y 14 and tunnel until the observer's lava-pool scan (≥ 10 connected source blocks with an open surface) has one.
+- `recoverItems`: walks only (`mode 'walk'`).
+
+**ProgressionPolicy** (`planner/policy.ts` `A_REQUIREMENTS`). Data, in order:
+- wooden pickaxe, stone pickaxe, stone sword;
+- food (met at 10 cooked, obtained to 14);
+- mining kit (pickaxe durability, sticks);
+- iron ingots (the state-based sum still needed for every unmet iron item: `ironNeed`);
+- iron pickaxe, iron sword, shield, iron armor ×2 (helmet and boots, the cheapest pair), water bucket, empty bucket, flint and steel;
+- lava pool.
+
+Every entry is an `obtain` call except the lava pool. The first unmet entry whose prerequisites are met and which Recovery has not suspended is the objective. Food is first in the list but not a hard prerequisite of iron: a fruitless hunt that Recovery suspends lets mining proceed.
+
+**Recovery** (`src/recovery/ladder.ts`, `death.ts`). L1 stays inside skills. Per objective and signature:
+- `STATE_INCONSISTENT` → resync the inventory, then retry (≤ 2).
+- An escaped `MISSING_RESOURCE` → one retry, because obtain re-resolves.
+- Movement, search, combat, watchdog and infra classes → retry, then relocate (one search step).
+- L3 switches to the `wide` strategy (12 search steps). Once strategies are exhausted, the objective is suspended for 5 min, but only if another objective is available; otherwise the bot relocates.
+- An objective over its wall budget goes straight to L3. 14 failures of one objective terminate the run (L5).
+- No reasoner is involved (`reasoner=none`).
+
+**Deaths** (§7.4).
+- The controller aborts the skill, waits for the death message, writes a `DEATH` bundle, and waits for the respawn.
+- It then clears cooldowns, L2 counters, entity tracking, `mob:` blacklists and the skill stack. It keeps locations, explored chunks, other blacklists and death records, which are all knowable.
+- `recoverDecision` goes back for the drops only when all of these hold:
+  - Overworld, < 240 s old, ≤ 300 blocks away;
+  - not a lava or void death;
+  - the bot did not die there before;
+  - something useful was lost.
+- `recoverItems` runs at P2 priority, so the drop-pickup interrupt does not cancel it.
+- The policy then re-plans from the actual inventory. An objective whose inputs were lost is never offered.
+
+**Runtime safety nets** (`src/bot`):
+- `installRaycastGuard` bounds prismarine-world's raycast iterator. Without it, a non-finite direction spins forever on the event loop.
+- `startStallWatch` is a worker thread. If the main thread stops beating for 12 s, it pauses V8 through the inspector and records the stack in `stalls.jsonl`.
+- Both were added while diagnosing dev3 disconnects, which turned out to be host sleep. They are kept as diagnostics and never change behaviour.
+
+**Version facts** added to `src/version.ts`: furnace recipes, fuel burn times (nether stems do not burn), tool tiers, gravel flint chance (10 %), monster spawn light ≤ 7, phantom insomnia (72 000 ticks, more than a 45-minute run), night bounds, 1.9+ weapon cooldowns and damage, armor points, the mob threat table, creeper swell and fuse, entity metadata indices, food animals, and unsafe foods.
+
+## 10B. Milestone A survival revision (after gate 20260929)
+
+The A gate failed on surface combat deaths (36 in 20 runs), food search and one spin loop (evaluation.md, gate log). This revision fixes those classes inside the existing components. It adds no component and does not change the gate.
+
+**Objective invariant** (`controller/progression.ts`).
+- After every objective success the controller re-checks the requirement that chose it (`RequirementDef.met`). If the requirement is still unmet, it records `OBJECTIVE_NOT_SATISFIED`. The record carries the objective, the requirement's `desc`, the state digest and the prior result.
+- The failure goes through Recovery: one retry, then a 5-minute suspension. A wider search cannot fix a mismatch.
+- Every loop iteration that returns in under 250 ms (50 ms for interrupts) is followed by a timer pause. A synchronous or microtask-only spin is therefore impossible.
+- Identical failure signatures within 30 s share one bundle and back off exponentially through an interruptible `holdSafe`, capped at 30 s.
+- Each requirement's objective now asks for exactly what the requirement needs: per-piece armor, and enough stone pickaxes to reach the kit durability. A unit property test checks that every objective's success satisfies its requirement, for every member of a group item.
+- Root cause of gate r09: `emergency_food` and the `eat` skill used different food definitions. Both now use `hasEmergencyFood`/`chooseFood`, and raw chicken counts as emergency food.
+
+**Progression order** (`planner/policy.ts`), still data:
+- emergency food; wooden pickaxe, stone pickaxe, stone sword;
+- **food buffer**: ≥ 3 food items, nearby animals only (2 search steps, bounded);
+- **wood kit**: logs for the shield, a crafting table and a margin, carried down;
+- mining kit; iron ingots; iron pickaxe, iron sword, shield, iron helmet, iron boots, bucket;
+- **cooked-food stock** (≥ 10, obtained to 14), which requires the sword, shield and both armor pieces;
+- water bucket, flint and steel, lava pool.
+
+`bounded` requirements keep their own search limits: Recovery's `wide` strategy does not apply to them.
+
+**Day/night schedule** (`controller/schedule.ts`, pure).
+- Surface night is time of day 12 000–23 300 in the Overworld.
+- An objective's surface kind comes from its resolved `obtain` plan:
+  - `hunt`: any hunt step;
+  - `short`: logs or filling water;
+  - none: mining, smelting, crafting, the lava pool.
+- At night, hunting is always deferred. Short surface work is deferred unless the bot is `nightCapable` (iron sword, shield, ≥ 4 armor points). The controller runs the first objective that is not deferred.
+- Hunting is deferred at night even for a `nightCapable` bot.
+- With none left, the controller runs `shelter` as the objective (dig in, wait for day). A surface objective still running at nightfall is stopped (`schedule` event, `nightfall`) and re-planned.
+
+**Ranged threats** (`skills/survival/cover.ts`, P1 `cover`).
+- `assessThreat` returns `cover` whenever a shooter is in sight beyond 4 blocks, whatever the bot's capacity. At ≤ 6 HP it returns `cover` for a shooter in sight at any distance. Shooters are skeleton, stray, pillager, witch, evoker, illusioner, guardian and a drowned holding a trident.
+- Shooters are never charged. A shielded-charge exception was tried and removed after dev batch 7, where two fully equipped bots died charging lone skeletons.
+- Response, in order:
+  1. Existing terrain: the nearest standable, hazard-free cell within 6 blocks that no shooter can see (eye and chest rays through the block view, `findCoverCells`).
+  2. A sealed dig-in: `planDigIn`, then `digIn`.
+  3. The shield raised toward the nearest shooter, for up to 12 s.
+  4. `COMBAT_DANGER`, so the controller falls back to `flee`.
+- The bot then holds cover for 8 s, or until the shooters leave range or come into melee range (`defend`).
+- Each attempt emits a `cover` event with method and outcome. They are reported apart from flee and defend.
+
+**Sealed dig-in** (shared by `cover` and `shelter`).
+- The bot digs the three blocks under a column and re-places the top one against a side wall. That leaves an enclosed 1×2 pocket.
+- Every dug block must dig in ≤ 1.6 s with the tools carried, release no liquid, and have solid walls at the bot's feet and head. The floor must be solid and harmless.
+- The cap is any carried non-falling block, usually one just dug. The old shelter capped only with a block carried beforehand, so it never capped after a death.
+- `body.enclosed` (observer) marks the pocket. While enclosed, P1 does not fire and P2 skips pickup and forage, so nothing pulls the bot out. That was the old shelter's main failure: cancelled 56 of 74 times.
+- The pathfinder digs and towers back out; a scenario test verifies this.
+
+**Creepers.** A creeper within 6 blocks (in sight, or within 3 blocks even out of sight) makes the action `flee` with the creeper as the primary threat, whatever the capacity. `defend` hands over when one comes that close.
+- With a shield: a **standoff**. The bot faces the creeper with the shield raised until it explodes, leaves beyond 10 blocks, or 8 s pass. In 1.16.1 a shield facing the source blocks explosion damage. This replaced outrunning, because in dev batch 9 creepers followed equipped bots through repeated flee/resume cycles.
+- Without a shield: `flee` weights the creeper ×3, runs 14 blocks, and succeeds once the creeper is beyond its 7-block defuse range and not swelling.
+
+**Melee without chases.** `defend` closes in only on melee mobs within 6 blocks; beyond that it waits, facing them, for up to 5 s (they come to the bot). A shooter that backs off beyond 4 blocks is left to `cover`. Chase and walk-mode movements take no parkour jumps and drop at most 3 blocks. In dev batches 7 and 9 two chases ended 14–24 blocks down ravines.
+
+**Sealed pocket hold.** While enclosed with a hostile within 8 blocks, P2 `hold` runs `shelter` (up to 30 s) instead of the objective. A 30 s gap follows each hold. In dev batch 8, a 16-block radius pinned bots for 30 min on mobs in nearby caves.
+
+**Food** (`generic/hunt.ts`, `controller/interrupts.ts`, observer).
+- The observer remembers food-animal sightings: 24-block clusters, 12 spots.
+- A hunt takes, in order:
+  1. a visible or given target;
+  2. up to 3 remembered spots (≤ 160 blocks, seen within 10 min; each blacklisted 5 min once visited);
+  3. at most `min(searchSteps, 6)` search steps.
+- The search budget survives preemption for 10 min and resets on a kill.
+- A P2 `forage` interrupt takes one short detour for an adult land food animal within 12 blocks. It needs the surface, daylight, no threat, and cooked plus raw meat under the stock target.
+- **Fish.** Cod and salmon are hunt targets after land animals (distance penalty 24). A fish is targeted only when it is within 2 blocks of the water surface, and approached to reach range (2.5). After 3 failed fish chases, a hunt keeps to land animals.
+  - Evidence: in 4 of the 6 food-failure runs of dev batches 8–9, land animals were seen 0–66 times and fish 200–990 times.
+  - Cooked cod and salmon are furnace outputs, so they count as cooked food.
+- The early buffer counts as met once sword, shield and armor are held, so it cannot alternate with the cooked-food stock.
+- Hunting is always daytime work. Night hunting for equipped bots was tried after dev batch 6 and reverted after three deaths in dev batches 7 and 9.
+
+**Recovery ladder additions.**
+- `persistent` requirements (the three food objectives) never terminate the run. Search failures (`SEARCH_EXHAUSTED`, `NOT_FOUND`) never terminate any objective: "not found yet" is not unrecoverable under a time limit.
+- `bounded` requirements (early buffer, emergency food) are suspended at their first search failure instead of retrying and relocating.
+- A hunt's search budget resets once the bot is > 96 blocks from where the budget started.
+
+**Other hazards found in dev batches.**
+- The navigator skips dry excavation starts it failed to reach, for 5 min.
+- `collect` never targets a block with water above it, and never digs with its head under water.
+- `placeNear` rejects only lava-adjacent spots. With no free cell it digs a head-level niche, and failing that throws a structured `PRECONDITION_FAILED`.
+- `manageInventory` fails when it frees no slot.
+- The observer attaches the death message that precedes Mineflayer's death event, so item recovery knows a lava death destroyed the drops.
+
+**Death context.** At each death the controller emits `death_context` from its last snapshot while alive. The snapshot holds weapon, armor, worn pieces, shield, objective, interrupt, skill stack, time of day, nearby hostiles, and any cover attempt in the 20 s before. `inspect batch` adds a survival section built from it (`evaluation/survival-report.ts`). For older runs it derives the same row from the event stream.
 
 ## 11. Repository layout
 
@@ -514,7 +717,8 @@ Tooling choices that close the "vitest or node:test" question from proposed-stac
 | **Stronghold navigation** | D | Once frames are in view distance, `goto` with the `stronghold` profile, digging through walls; silverfish is a P1 threat; fill frames from inventory and verify the portal-open block update | D |
 | **Model integration** (latency, invalid output, vendor lock) | any | Menu-only decisions, zod validation, one retry, deterministic fallback, `holdSafe` while waiting, `ModelClient` as the only vendor boundary, `ScriptedReasoner` for tests | Interface now; real provider after A |
 | **Excessive context or model use** | cost, latency | Digest caps (~1.5k tokens), gate budgets and cache, image only for `diagnose_failure`; `reasoner_calls` is a first-class evaluation metric | Now |
-| **Version/plugin incompatibility** | all | Exact pins (1.21.4 everywhere), lockfile, pathfinder commit plus patches, pvp vendoring check at install, viewer optional; nav benchmark reruns on any bump | Now (M0) |
+| **Version/plugin incompatibility** | all | Exact pins (1.16.1 everywhere, `src/version.ts`), lockfile, pathfinder commit plus patches, pvp vendoring check at install, viewer optional; nav benchmark reruns on any bump. Mineflayer's CI covers 1.16.5, not 1.16.1, so the 1.16.1 scenario suite and benchmark are the compatibility evidence | Now (M0) |
+| **Legacy server runtime** (1.16.1 needs Java 8; bundles log4j 2.8.1) | evaluator | Explicit Java 8 path (`src/evaluation/java.ts`, rejects other majors); Log4Shell mitigated with `%msg{nolookups}` (`config/log4j2-server.xml`), verified by a lookup probe; server bound to 127.0.0.1 | Now |
 | **Physics divergence** (prismarine-physics vs vanilla) | nav, combat | Tolerate `forcedMove`, count position corrections in telemetry, report them as `STATE_INCONSISTENT` detail | Now (telemetry only) |
 | **Long run time** (evaluation throughput) | all gates | Parallel servers on separate ports; per-milestone stage metrics; fixture scenarios for late-stage development (never scored) | M0 harness; parallelism when runs exceed 1 h |
 
@@ -530,3 +734,51 @@ Tooling choices that close the "vitest or node:test" question from proposed-stac
 - **Diagnosability:** every L2+ failure, death and timeout produces a bundle with state, events, trace, skill stack, nav detail and a voxel slice. Batch reports index them by signature (evaluation.md §5).
 - **Full-game capable:** the requirement list and strategy catalog already run to `dragon_dead`. Later milestones add progression skills and catalog entries, not new components.
 - **Size:** ten small modules. Everything mechanical is reused per proposed-stack.md.
+
+## 14. 1.16.1 game model for later milestones
+
+This section records the facts about 1.16.1 that the progression strategies above depend on. Items marked **(jar)** were read from the 1.16.1 server jar's data (`data/minecraft/loot_tables/…`, structure lists) or from minecraft-data 1.16.1. The rest are established 1.16 mechanics that fixture scenarios must confirm before any tuning depends on them. None of it is a seed fact.
+
+### 14.1 Overworld (milestone A)
+- **World shape.** y 0–255 with a bedrock floor at 0–4. The sea surface is at y 62. There is no deepslate, tuff, copper, amethyst, aquifers or noise caves; caves are carver tunnels and ravines. Carvers fill every cave cell at **y ≤ 10 with lava**, so y 10 is the lava level. `src/version.ts` holds these bounds (`OVERWORLD`, `UNDERGROUND`).
+- **Ores.** Iron is y 0–63, gold y 0–31, redstone and diamond y 0–15, coal y 0–127.
+  - Iron and gold ore **drop the ore block itself** and must be smelted; there are no raw ores **(jar)**.
+  - Iron needs a stone pickaxe; gold and diamond need an iron pickaxe.
+- **Mining depths.**
+  - Iron mining happens around feet y 16, where a pickaxe opens the whole iron range quickly (`UNDERGROUND.miningY`). The navigation benchmark's `depth` trial targets this level.
+  - Diamond-level strip mining uses feet y 11, the lowest level clear of lava lakes (`UNDERGROUND.diamondY`). It needs the excavation lava checks on every block, because lava pools sit directly below.
+  - Diamonds are optional for the dragon: obsidian comes from a lava cast.
+- **Hostile mob pressure.** Before 1.18, hostile mobs spawn at **block light ≤ 7** (0 from 1.18 on). Dark caves, forests and dusk therefore spawn more mobs than in the old 1.21.4 runs. Excavation and mining need the P1 threat interrupt and torches or cover earlier than the 1.21.4 plan assumed.
+- **Mobs present:** zombie, husk, drowned (some with tridents in rivers and oceans), skeleton, stray, spider, cave spider, creeper, enderman, witch, slime, phantom, pillager patrols and raids.
+  - Absent: goats and axolotls (1.17), warden (1.19), breeze and bogged (1.21).
+  - **Phantoms** appear after 3 in-game days without sleep. A 180-minute run spans about 9 days, so sleeping in a bed (which also skips the night) becomes a maintenance objective in A.
+- **Ruined portals** (new in 1.16) spawn in the Overworld. They have partial obsidian frames and a chest with gold and sometimes flint and steel **(jar)**, which makes them a cheap `obsidian`/`nether_portal` alternative.
+
+### 14.2 Nether (milestones B and C)
+- **Biomes:** nether wastes, soul sand valley (ghasts and skeletons; soul sand slows walking), crimson forest (piglins and hoglins), warped forest (endermen, so the safest `hunt_endermen` location), and basalt deltas (magma cubes, very uneven terrain; avoid).
+- **Bartering (jar, `gameplay/piglin_bartering.json`).** A piglin trades one gold ingot for one roll of a 423-weight table:
+  - **ender pearls at weight 20 (4.7 %), 4–8 per trade**: about 0.28 pearls per ingot, so ≈ 50 ingots for 14 pearls on average;
+  - obsidian at weight 40 (9.5 %, 1 each);
+  - string 8–24 (4.7 %; wool for beds, §14.4);
+  - fire resistance potions, drinkable and splash (2.4 % each);
+  - gravel, soul sand, nether bricks, leather, fire charges, crying obsidian (which cannot build a portal), quartz, glowstone and magma cream.
+
+  The 1.16.2 jar lowers pearls to weight 10/459 with 2–4 per trade **(jar)**. Strategies written for later versions underrate bartering in 1.16.1.
+- **Piglins** are neutral while the bot wears any golden armor piece. Mining gold blocks or opening chests near them angers them. **Piglin brutes do not exist in 1.16.1**: they are absent from minecraft-data 1.16.1 and from the 1.16.1 jar, but present in the 1.16.2 jar **(jar)**. Bastions are therefore much safer than in later versions. Hoglins are hostile; zoglins are hostile.
+- **Gold sources.**
+  - Nether gold ore drops 2–6 nuggets with any pickaxe **(jar)** and is common in all Nether biomes.
+  - Gilded blackstone drops 2–5 nuggets some of the time **(jar)**.
+  - Bastions hold gold blocks and chests.
+  - Overworld gold ore needs an iron pickaxe and smelting.
+- **Structures.** Fortresses (blaze spawners, wither skeletons; nether bricks) and bastions (polished blackstone bricks, gilded blackstone) compete for the same Nether structure regions, so the bot may see several bastions before its first fortress. `findFortress` keeps the explored-chunk sweep (`axis_sweep`, then `spiral_explore`). A structure census fixture must measure the typical search radius before any budget is tuned.
+- **Blazes** drop 0–1 rods **(jar)**, so 7 rods take about 14 kills without Looting.
+
+### 14.3 Stronghold and End (milestones D and E)
+- Strongholds sit in rings around the world origin, with the first ring 1280–2816 blocks out. An eye of ender flies toward the nearest one and shatters 20 % of the time. The portal room has 12 frames, and each frame already holds an eye 10 % of the time. `eyes_of_ender(≥14)` therefore covers a full frame fill plus about 2 throws; triangulation uses 2 throws ≥ 200 blocks apart (§6.3), each of which may cost an eye.
+- **End.** The dragon fight uses the 1.9+ mechanics, unchanged through 1.16.1: end crystals on obsidian pillars (some caged), dragon perching on the exit portal, and beds exploding outside the Overworld. The bed-perch strategy and the `melee_perch` alternate need no version change. Endermen are the End's ambient threat, so the no-eye-contact rule matters.
+
+### 14.4 Strategy consequences (to implement in the listed milestones)
+- **A:** smelting is required for iron (no raw ores). Add night sleep and phantom handling to maintenance. Excavation must treat y ≤ 10 as lava territory. Mob pressure underground is higher, so defend/flee must be ready before long excavations.
+- **B:** portal options are `lava_cast` or completing a ruined portal. Wear one golden armor piece before entering (piglins).
+- **C:** pearls come from **bartering first** (gold from nether gold ore and bastions), with `hunt_endermen` in warped forests as the alternate. Blaze rods come from fortress spawners. Fire resistance potions from bartering are a lava safety margin, never a precondition.
+- **D/E:** unchanged from the design above. Beds can come from sheep wool or bartered string (4 string → 1 wool).
