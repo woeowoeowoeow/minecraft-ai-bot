@@ -76,3 +76,21 @@ export function netherReadyInventory (inv: Record<string, number>): boolean {
   return n('iron_pickaxe') >= 1 && n('iron_sword') >= 1 && n('shield') >= 1 && n('bucket') >= 1 && armor >= 2 &&
     n('flint_and_steel') >= 1 && cooked >= 10 && (n('obsidian') >= 10 || n('water_bucket') >= 1)
 }
+
+/** 1.16.1 advancement title for entering the Nether (story/enter_the_nether). */
+export const NETHER_ADVANCEMENT = 'We Need to Go Deeper'
+
+/** `data get entity <name> Dimension` → dimension id without the namespace, or null. */
+export function parseDimension (line: string, username: string): string | null {
+  const m = line.match(new RegExp(`${username} has the following entity data: "minecraft:([a-z_]+)"`))
+  return m ? m[1]! : null
+}
+
+/**
+ * Server-side check of milestone B: the Nether-entry advancement was granted, the bot
+ * ends the run in the Overworld (return_ok), and a lit portal block stands where the bot
+ * says it built one. Bot memory (which portal it used) is not visible to the server.
+ */
+export function milestoneBVerified (g: { advancements: string[]; dimension: string | null; portalCheck: boolean | null }): boolean {
+  return g.advancements.includes(NETHER_ADVANCEMENT) && g.dimension === 'overworld' && g.portalCheck === true
+}

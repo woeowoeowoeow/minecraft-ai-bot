@@ -3,7 +3,7 @@
 import { mulberry32 } from '../../src/bot/rng.js'
 import { Observer } from '../../src/observer/observer.js'
 import type { SkillResult } from '../../src/schema/index.js'
-import { registerASkills } from '../../src/skills/registry.js'
+import { registerBSkills } from '../../src/skills/registry.js'
 import { SkillRunner } from '../../src/skills/runner.js'
 import type { SkillEnv } from '../../src/skills/types.js'
 import type { Fixture } from './harness.js'
@@ -23,7 +23,7 @@ export function runtime (f: Fixture): Runtime {
     random: mulberry32(11),
     capture: () => {},
   }
-  const runner = registerASkills(new SkillRunner(env))
+  const runner = registerBSkills(new SkillRunner(env))
   return {
     obs, runner, env,
     run: async (skill, params) => {

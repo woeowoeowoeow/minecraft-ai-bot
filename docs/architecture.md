@@ -675,6 +675,68 @@ The A gate failed on surface combat deaths (36 in 20 runs), food search and one 
 
 **Death context.** At each death the controller emits `death_context` from its last snapshot while alive. The snapshot holds weapon, armor, worn pieces, shield, objective, interrupt, skill stack, time of day, nearby hostiles, and any cover attempt in the 20 s before. `inspect batch` adds a survival section built from it (`evaluation/survival-report.ts`). For older runs it derives the same row from the event stream.
 
+## 10C. Milestone B implementation (as built)
+
+B adds progression skills, a navigation profile, observer memory and policy data. It adds no component.
+
+**Observer memory.**
+- `WorldMemory.transitions` records every dimension change the client sees (respawn packet): from, to, time, departure position (captured at the respawn packet, before the teleport), arrival position, and cause (`death` if a death preceded it, else `portal`).
+- On a portal arrival, the observer remembers the nearest `nether_portal` block as `portal_nether` (or `portal_ow`). It polls loaded chunk data for up to 10 s.
+- `WorldMemory.excursions` holds the farthest distance from the arrival portal reached on each Nether visit.
+- Per-dimension caches are dropped on every transition.
+
+**Milestone predicates** (`planner/milestones.ts`; exact reading in milestones.md): `portal_built`, `in_nether` (through the built portal), `portal_nether`, `excursion` (≥ 12 blocks this visit), `return_ok` (a portal transition back, after such an entry and excursion), and `B`.
+
+**`buildNetherPortal`** (`skills/progression/portal.ts`, geometry in `portal-plan.ts`, bucket primitives in `buckets.ts`).
+- *Strategy* (deterministic, first applicable): `lava_cast` needs a water bucket, an empty or lava bucket and a usable remembered pool. `obsidian` needs ≥ 10 carried obsidian, or a diamond pickaxe and ≥ 10 obsidian blocks in the interest index. Recovery's alternate strategy can narrow the choice.
+- *Site.* The frame is a 4 × 5 rectangle with optional corners. Behind the whole rectangle stands a solid back wall: natural rock, or up to 20 placed blocks on open ground. In front is a cleared work area (5 high, then 4 high) with a solid floor. `findSites` scans loaded terrain within 9 blocks of the pool's safe access stand, in 4 orientations and ±2 levels. It rejects any site with:
+  - liquid in or beside a cleared cell;
+  - a gravity block above a cleared cell;
+  - a block slower than 3 s to dig;
+  - obsidian outside the frame cells;
+  - lava within 4 blocks of the frame or work area.
+
+  Cost is digs + 2 × placements − 0.5 × obsidian already in the frame. Ties break on position, so the choice is deterministic.
+- *Bucket aiming.* A bucket is used through the server's raytrace from the player's look: `Item.raycast`, 5 blocks, outline shapes. A full bucket ignores fluids; an empty one stops at the first source. `bucketRay` replicates it client-side. Every use is aimed at a face whose ray lands the fluid in the target cell (`aimPlace`, `aimPickup`), re-checked along the look actually held, and verified from the server's block updates.
+- *Lava cast.* Cells are cast top-down: top row, sides downward, bottom row. The cells a ray crosses below its target are therefore never obsidian yet. Per cell:
+  1. Fill the empty bucket at a pool stand that keeps a block of distance from every lava cell.
+  2. Pour water into a free neighbouring cell (beside or above, inside the walled rectangle).
+  3. Pour lava into the frame cell: lava next to water becomes obsidian at once.
+  4. Pick the water back up.
+  5. Verify obsidian.
+
+  If the lava stays lava, it is cooled with a second pour or bucketed back. Up to 3 attempts per cell. Water left behind by an interruption is picked up on resume.
+- *Obsidian.* Carried obsidian is placed into the same frame, bottom-up, against the back wall.
+- *Finish.* Wait for the interior to drain, verify 10 obsidian and an empty interior, then light with flint and steel on a bottom block (up to 3 tries). The portal is remembered only once 6 `nether_portal` blocks are seen.
+- *Recovery inside the skill.* The site is remembered (`portal_site`) and resumed after a preemption unless `resumeCheck` finds obsidian or lava outside the frame. A site that fails twice is blacklisted for an hour. A pool with no safe access, no site or no sources left is marked `unusable`, so `lava_pool` becomes unmet and the bounded `findLavaPool` search runs again. Missing building blocks or a lost water bucket are obtained by nested `obtain` calls.
+
+**`usePortal`** (`skills/progression/nether.ts`): leave through the built portal (Overworld) or the nearest remembered Nether portal.
+- Navigate to the portal and check that it is lit. An extinguished portal is relit with flint and steel: the built frame from its geometry, an arrival portal by trying obsidian top faces.
+- Step into the lowest portal cell and stand still for up to 9 s, 3 times.
+- Success is the client's dimension actually changing. Then wait for chunks, record the arrival hazards, remember the arrival portal, and step out to a safe cell so the bot is not sent straight back.
+
+**`netherExcursion`.** `excursionTargets` returns safe standable cells 12–20 blocks from the arrival portal: harmless floor, no lava within 2 blocks, no drop deeper than 3 beside the cell. There is at most one per 45° sector, and those with fewest lava cells within 4 come first. Up to 4 are tried with the `nether` profile. The fallback is a straight 2-high tunnel at portal level in the cardinal direction whose line holds the most lava-free rock (controlled excavation, which never opens lava). The farthest distance reached is recorded.
+
+**`nether` navigation profile** (`nav/pathfinder.ts`): no parkour, drops of at most 2, no sprinting, no digging down. A step costs +40 beside lava and +8 within 2 blocks of it. A block with lava around it is never broken. Magma, fire and soul fire are avoided. Soul sand is allowed (it only slows). Netherrack or cobblestone scaffolding bridges short gaps. The runner picks the profile from the dimension unless a skill asks for one.
+
+**Threats.** Ghast and blaze count as ranged (cover). Wither skeleton, magma cube, hoglin and zoglin count as melee. Piglins count unless the bot wears golden armor. Zombified piglins never count. Surface night (shelter, hunting deferral) exists only in the Overworld.
+
+**Policy** (`planner/policy.ts` `B_REQUIREMENTS`). It is the A list, then B entries gated on `nether_ready` (`when`).
+- After `nether_ready`, A requirements count as met except emergency food and a pickaxe. A cast turns the empty bucket into a lava bucket for a while, and a death may cost armor; neither re-opens the A kit.
+- B entries, in order: flint and steel; a water bucket, a bucket and a usable pool, each only until the portal stands; ≥ 4 food items (bounded); `nether_portal`; `enter_nether`; `nether_excursion`; `return_overworld`.
+- Every A requirement counts as met in the Nether.
+- A death, an interruption or an accidental portal trip re-plans from state.
+
+**Recovery additions.**
+- Nether objectives are `noRelocate`: the ladder retries instead of taking a search walk.
+- Any relocation while in the Nether becomes a retreat through the remembered portal (`recovery_step` `retreat`); the policy then re-enters.
+- `findLavaPool` ignores pools marked unusable.
+- The P2 drop pickup treats the portal skills like the other self-collecting skills: no detours for bulk blocks.
+
+**Evaluator.** Scenario `b` (target `B`, 70-minute default). Ground truth: the `We Need to Go Deeper` advancement, `data get entity Bot Dimension` at the end, and `execute if block` on the reported built-portal cell. The batch report adds a B section (`evaluation/portal-report.ts`): the legs from `nether_ready` to return, strategy usage and success, cast and lava-fetch steps, pool rejections, Nether arrivals, excursions, retreats and deaths. Fixture `bkit` gives the nether_ready inventory but no pool knowledge, for development only.
+
+**Reasoner.** `planner/model.ts` holds the `ModelClient` boundary and `ModelReasoner` (§5.3). No provider adapter is shipped and runtime reasoning is disabled (milestones.md, B note).
+
 ## 11. Repository layout
 
 ```text

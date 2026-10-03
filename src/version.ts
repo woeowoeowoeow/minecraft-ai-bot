@@ -141,7 +141,18 @@ export const MOB_THREATS: Record<string, MobThreat> = {
   silverfish: { weight: 0.5, range: 2 }, endermite: { weight: 0.5, range: 2 },
   guardian: { weight: 1.5, range: 12, ranged: true }, elder_guardian: { weight: 3.0, range: 12, ranged: true },
   polar_bear: { weight: 1.5, range: 2, neutral: true }, wolf: { weight: 1.0, range: 2, neutral: true },
+  // Nether (milestone B): ghast fireballs and blaze fireballs are ranged; piglins are hostile
+  // to a player without golden armor (threat.ts); zombified piglins stay neutral (never counted).
+  ghast: { weight: 2.0, range: 32, ranged: true }, blaze: { weight: 2.0, range: 16, ranged: true },
+  // A large magma cube hits for 6 (dev1 r05: 20 → 0 HP while `defend` rated it 0.41).
+  wither_skeleton: { weight: 2.5, range: 2 }, magma_cube: { weight: 5.0, range: 2 },
+  // A gold-sword piglin hits for ~8 at normal difficulty (smoke r02: 20 → 0 HP in 3 hits against
+  // 4 armor points); hoglins hit as hard. Crossbow piglins are ranged (threat.ts).
+  piglin: { weight: 5.0, range: 2 }, hoglin: { weight: 5.0, range: 2 }, zoglin: { weight: 5.0, range: 2 },
 }
+
+/** Golden armor makes piglins neutral (1.16.1 `PiglinBrain.wearsGoldArmor`). */
+export const GOLDEN_ARMOR = new Set(['golden_helmet', 'golden_chestplate', 'golden_leggings', 'golden_boots'])
 
 /** Creeper: swells within 3 blocks, fuse 30 ticks, stops swelling beyond 7 blocks (1.16.1 SwellGoal). */
 export const CREEPER = { swellRange: 3, fuseMs: 1500, defuseRange: 7 } as const

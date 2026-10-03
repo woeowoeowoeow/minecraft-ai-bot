@@ -41,6 +41,8 @@ export class Observer {
     explored: { overworld: new Set(), the_nether: new Set(), the_end: new Set() },
     blacklist: [],
     deaths: [],
+    transitions: [],
+    excursions: [],
   }
 
   readonly control: WorldState['control'] = { skillStack: [] }
@@ -58,6 +60,9 @@ export class Observer {
   private fallStartY: number | null = null
   private seenAt = new Map<number, number>()
   private lastDist = new Map<number, { d: number; t: number; closing: number }>()
+  /** Last position in the dimension being left (captured at the respawn packet, before the teleport). */
+  private departure: V3 | null = null
+  private diedSinceTransition = false
 
   constructor (readonly bot: Bot, readonly bus: EventBus) {
     for (const n of logBlockNames(bot)) this.interest.add(n)
@@ -77,6 +82,7 @@ export class Observer {
       this.lastHealth = bot.health
     })
     bot.on('death', () => {
+      this.diedSinceTransition = true
       this.counters.deaths++
       const pos = toV3(bot.entity.position)
       const lost = { ...this.lastInv }
@@ -92,9 +98,15 @@ export class Observer {
       if (e.onGround || inLiquid || this.fallStartY === null || e.position.y > this.fallStartY) this.fallStartY = e.position.y
     })
     bot.on('entityGone', (e: Entity) => { this.seenAt.delete(e.id); this.lastDist.delete(e.id) })
+    // The respawn packet arrives before the new position: the entity still stands where it left.
+    bot.on('respawn', () => { if (bot.entity?.position) this.departure = toV3(bot.entity.position) })
     bot.on('spawn', () => {
       const dim = this.dim()
-      if (this.lastDim && dim !== this.lastDim) bus.emit('dimension_change', { from: this.lastDim, to: dim })
+      if (this.lastDim && dim !== this.lastDim) this.onTransition(this.lastDim, dim)
+      // A death respawn in the same dimension is no transition: forget the death, or the next
+      // portal trip is recorded as a death respawn (dev2 r01: an A-phase death marked the first
+      // Nether entry `death`, and return_ok needed a second round trip).
+      else this.diedSinceTransition = false
       this.lastDim = dim
       this.lastHealth = bot.health
     })
@@ -128,6 +140,44 @@ export class Observer {
 
   private lastDeathMessage: string | null = null
   private lastDeathMessageAt = -Infinity
+
+  /**
+   * A dimension change (milestone B): record it with where the bot left and arrived and
+   * whether a death caused it, drop per-dimension caches, and remember the portal the
+   * bot arrived in once its blocks are loaded (client-visible state only).
+   */
+  private onTransition (from: Dim, to: Dim): void {
+    const toPos = toV3(this.bot.entity.position).map(v => Math.round(v * 10) / 10) as V3
+    const cause = this.diedSinceTransition ? 'death' : 'portal'
+    const tr = { from, to, t: this.bus.now(), fromPos: (this.departure ?? toPos).map(v => Math.round(v * 10) / 10) as V3, toPos, cause } as const
+    this.memory.transitions.push({ ...tr })
+    this.diedSinceTransition = false
+    this.departure = null
+    this.interestCache = null
+    this.seenAt.clear()
+    this.lastDist.clear()
+    this.fallStartY = null
+    this.bus.emit('dimension_change', { ...tr })
+    if (cause === 'portal') void this.rememberArrivalPortal(to, toPos)
+  }
+
+  /** Arrival portal: the nearest nether_portal block within 3 blocks, polled until its chunk is in. */
+  private async rememberArrivalPortal (dim: Dim, at: V3): Promise<void> {
+    const id = this.bot.registry.blocksByName.nether_portal?.id
+    if (id === undefined) return
+    for (let i = 0; i < 20; i++) {
+      if (this.dim() !== dim) return
+      const p = this.bot.findBlocks({ matching: id, maxDistance: 4, count: 12, point: new Vec3(...at) })
+        .sort((a, b) => a.distanceTo(new Vec3(...at)) - b.distanceTo(new Vec3(...at)))[0]
+      if (p) {
+        const kind = dim === 'the_nether' ? 'portal_nether' : dim === 'overworld' ? 'portal_ow' : null
+        if (kind) this.remember(kind, [p.x, p.y, p.z], 'observed', { lit: true, arrival: true })
+        return
+      }
+      await new Promise(r => setTimeout(r, 500))
+    }
+    this.bus.emit('nether', { kind: 'arrival_portal_not_seen', dim, at }, 'warn')
+  }
 
   stop (): void {
     for (const t of this.timers) clearInterval(t)
@@ -175,7 +225,7 @@ export class Observer {
   remember (kind: Location['kind'], pos: V3, source: Location['source'], detail?: Location['detail']): void {
     const dim = this.dim()
     const existing = this.memory.locations.find(l => l.kind === kind && l.dim === dim && Math.hypot(l.pos[0] - pos[0], l.pos[2] - pos[2]) < 8)
-    if (existing) { existing.lastSeen = this.bus.now(); if (detail) existing.detail = detail; return }
+    if (existing) { existing.lastSeen = this.bus.now(); if (detail) existing.detail = { ...existing.detail, ...detail }; return }
     this.memory.locations.push({ kind, dim, pos, confidence: 1, source, lastSeen: this.bus.now(), detail })
     this.bus.emit('location_discovered', { kind, dim, pos: pos.map(Math.round), source, ...(detail ? { detail } : {}) })
   }

@@ -478,3 +478,117 @@ Before the gate:
 3. **r19 timeout:** "no place to put crafting_table" 8× on the iron tools (iron pick only at 886 s), then food search.
 
 **Gate: milestone A passes** (≥ 70 % ✓, ≤ 0.5 deaths/run ✓, 0 interventions ✓). Milestone B has not started.
+
+### Milestone B development on 1.16.1: 2026-10-01/02 (code uncommitted on 5a0981c; dev seed sets and fixtures, never a gate)
+
+B was built as recorded in architecture §10C. The predicate reading was recorded in milestones.md before any measurement. The gate is unchanged: 20 held-out seeds, ≥ 60 % within 70 min, ≤ 1 death/run, 0 interventions. Every B run uses `reasoner=none`.
+
+**Real-server fixtures** (`tests/scenario/portal.scenario.test.ts`, flat peaceful world, console setup):
+- lava cast from a surface pool;
+- Nether entry with portal memory, a 12-block excursion and a verified return;
+- relighting an extinguished portal;
+- an obsidian portal;
+- a pool at the bottom of a 6-deep pit, which must be rejected (`NOT_FOUND`, pool marked unusable);
+- a lava-lake arrival platform with one causeway to land.
+
+All 6 pass. The final cast takes 106 s for 10 casts and 10 fetches, with no failed fetch.
+
+**Fixture batches (`bkit`: the nether_ready inventory, but the bot must find its own lava pool):**
+
+| batch | runs | result | leading signature → fix |
+|---|---|---|---|
+| `20261001-213903-b-bkit1` | 2 | 0/2 (both L5 at `nether_portal`) | r01: `NAV_HAZARD … step=reach_site`. The site lay 4 blocks away in a cave, the `near` goal chose controlled excavation, and excavation refused the liquid-adjacent floor. **Fix:** nav mode `path` (pathfinder with digging, never excavation) for site moves; `nether_portal` is `noRelocate`; failed sites blacklist a 2-block radius; a pool is rejected after 3 failed sites. r02: `STATE_INCONSISTENT … step=cast` "no free cell for the cast water". The top corners hold the cast water for the top row but were not cleared, so in rock they stayed stone. **Fix:** top corners are part of the cleared site, and a rock-terrain cast simulation was added to the unit tests. Lava access then ran out of reachable sources. **Fix:** a second tier of shore stands, with no lava beside the feet or head. |
+| `20261001-215542-b-bkit2` (same seeds, replay) | 2 | 1/2 | r02: **B in 270 s**, ground truth verified. Four excursion legs ended at 11.x blocks (goal range against a target at exactly 12). **Fix:** targets at 12 + 2. r01: 4 deaths to cave mobs at an open cave pool (zombies, skeletons, creeper), the first while carrying iron gear. **Fix:** site cost now includes *exposure*: horizontal open cells bordering the site. A site cut into rock beats open cave floor. |
+
+A trace of the lava-cast fixture then showed each return move into a dug-down stand failing after 25 s (walk-only). **Fix:** short-move budgets of 8 s walking, then 15 s with the digging pathfinder. The build went from 287 s to 78 s.
+
+**Smoke (fresh dev seeds, full B scenario from spawn), `20261001-225426-b-b-smoke1`: 3/3 reached B** (Wilson 95 % CI 44–100 %). Ground truth verified 3/3: advancement, final dimension and lit built portal. Deaths: 1 (0.33/run). Infra: 0.
+
+| run | nether_ready | portal_built | in_nether | excursion | return_ok (= B) | deaths |
+|---|---|---|---|---|---|---|
+| r01 | 795 | 1045 | 1050 | 1072 | 1084 | 0 |
+| r02 | 774 | 1027 | 1033 | 1059 | 1770 | 1 (piglin, in the Nether) |
+| r03 | 1451 | 1663 | 1669 | 1705 | 1717 | 0 |
+
+- **Portal:** lava cast every time. 34 cells cast with 0 failed casts. 34 lava fetches, 11 failed fetch attempts (6 "no ray from here", 4 no block change, 1 drift). The nether_ready → portal leg p50 was 249 s, mostly travel to a deep site.
+- **r02 death:** a gold-sword piglin took the bot from 20 to 0 HP in three hits while `defend` rated it 0.47 against capacity 4.8. **Fixes:**
+  - A bounded `b_gold_armor` requirement: obtain a golden helmet before the portal (architecture §14.4). Golden armor scores +0.5, so a golden helmet replaces the iron one at equal points.
+  - Piglin and hoglin threat weight 1.5/2.5 → 4.0.
+  - A piglin holding a crossbow counts as ranged.
+- **Other fixes after the smoke:**
+  - A distant site is approached with the navigator's own strategy (controlled excavation for deep targets) before the short work-area moves.
+  - The bot centres in a stand cell before any bucket use, since rays are planned from the cell centre.
+
+**Dev batch 1 (6 fresh dev seeds, full B scenario), `20261002-001748-b-b-dev1`: 2/6 reached B.** Two runs were lost to host sleep: lid closed on battery, `pmset` log `Using Batt`.
+
+| run | outcome | B s | deaths | diagnosis |
+|---|---|---|---|---|
+| r01 | timeout (A phase) | – | 3 | 2 cave-skeleton deaths before iron, then food searches out to x ≈ 2400 and a drowned death. A behaviour; not changed in B. |
+| r02 | infra_error | – | 0 | host suspended 741 s |
+| r03 | infra_error | – | 0 | host suspended 202 s |
+| r04 | goal_reached | 1784 | 0 | golden helmet in about 2 min (5 gold ore), then portal, trip and return |
+| r05 | unrecoverable | – | 2 | Three causes: (1) A large magma cube killed the bot in the Nether: 6 damage a hit, while `defend` rated it 0.41 against capacity 4.8. (2) The excursion's walking legs chose controlled excavation, because the Nether's bedrock roof makes every target "covered", and failed to find a start. (3) After a second death, both pickaxes broke on an excavated approach to the portal. At night the wooden pickaxe was deferred as surface work, and `enter_nether` failed 14× for lack of a pickaxe. |
+| r06 | goal_reached | 1339 | 0 | – |
+
+**Fixes:**
+- Nether brutes (piglin, hoglin, zoglin, magma cube) get weight 5, so the bot flees them unless it is very strong.
+- Excursion legs use the pathfinder (`path`) with the nether profile; the tunnel stays the fallback.
+- The portal approach falls back to `path`, and a missing pickaxe there is `MISSING_RESOURCE`.
+- `nether_portal` and `enter_nether` require a pickaxe, so at night the bot shelters and crafts one at dawn.
+
+The fixtures still pass 6/6. The two infra seeds and r05's seed are replayed as `b-dev2`, using dev seeds only.
+
+**Dev replay (`20261002-035155-b-b-dev2`, the dev1 seeds r02, r03 and r05, with the dev1 fixes): 2/3 reached B.**
+
+| run (seed) | outcome | B s | deaths | diagnosis → fix |
+|---|---|---|---|---|
+| r01 (dev1 r02) | goal_reached | 2005 | 1 (A phase, lava) | An A-phase death respawned in the same dimension, which left the observer's "died since the last transition" flag set, so the first Nether entry was recorded as cause `death`. The controller's invariant caught it (`OBJECTIVE_NOT_SATISFIED` on `return_overworld`) and the bot made a second trip, costing about 20 s. **Fix:** a same-dimension respawn clears the flag. |
+| r02 (dev1 r03) | goal_reached | 2096 | 0 | Four pools were rejected at once from 50–100 blocks away ("no safe stand"), and a deep-mine → surface-site approach got stuck for 250 s. **Fixes:** pool geometry is judged only within 16 blocks (approach first); a covered bot climbs out by its dug staircase (`toSurface`) before travelling to a site, pool or portal well above it. |
+| r03 (dev1 r05) | timeout | – | 2 (lava, same site) | The site was at the lava level of a huge sheet. The capped flood fill (600 cells) missed the lava near the site, and the walk back from the pool stepped into lava twice. **Fixes:** flood cap 4000; sites with lava within 2 blocks of the floor, work area or frame are rejected; portal moves use `overworld_cautious` (lava step cost, no parkour, drops ≤ 3; plain `overworld` unchanged for A); a site or pool where the bot died is abandoned. |
+
+**Dev evidence across the six dev1 seeds, with each seed's latest run:**
+- **Reached B: 4/6** (dev1 r04 and r06; replay r01 and r02).
+- **Deaths:** 6 in 6 runs = 1.0/run. 4 were A-phase (cave skeletons, drowned, lava swim) and 2 were B-phase lava deaths at one site (fixed).
+- **Infra:** 2 host-sleep runs, both replayed.
+- **Portal:** no unresolved portal-construction failure remains. Every built portal was a lava cast, and the casts themselves never failed.
+
+This meets the brief's bar of ≥ 4/6. The full test suite runs next, then the formal gate.
+
+### Milestone B gate on 1.16.1: 2026-10-02/03 (code uncommitted on 5a0981c, content hash `1120019679d44041`; Node 22.23.3, Java 1.8.0_504, mineflayer 4.39.0)
+
+The B gate: 20 held-out seeds, ≥ 60 % within 70 min, ≤ 1 death/run, 0 interventions. `reasoner=none`, `--parallel 1`, under `caffeinate`.
+
+**Execution note.** The host crashed during run 13 of `20261002-063440-b-b-gate`. The evaluator generated its seeds in memory, so seeds 14–20 were lost. Run 13 is scored as **infra_error**, a failure in the denominator. Its `summary.json` was reconstructed from its events, including its 2 deaths. The gate was completed with **`20261002-155811-b-b-gate-part2`**: 7 fresh held-out seeds on the same code (content hash re-verified before launch). Both parts are aggregated below; the combined output is in `runs/20261002-155811-b-b-gate-part2/combined-gate.txt`. No held-out run was examined before all 20 had finished.
+
+| metric | value | gate |
+|---|---|---|
+| reached B (`in_nether` via built portal + `portal_nether` + `return_ok`) ≤ 70 min | **15/20 = 75 %** (Wilson 95 % CI 53.1–88.8 %) | ≥ 60 % ✓ |
+| deaths/run | **22 → 1.10** | ≤ 1 ✗ |
+| interventions | 0 | 0 ✓ |
+| infra errors | 1/20 (host crash) = 5 % | – |
+| ground truth on B claims | 15/15 verified: advancement, final dimension, lit built portal | – |
+| time to B p50 / p90 | 1780 / 2823 s | – |
+| outcomes | 15 goal, 2 timeout, 1 death_limit, 1 unrecoverable, 1 infra | – |
+| reasoner calls | 0 | – |
+| navigation | 85.7 % ok of 3491 calls (overworld 76 %, overworld_cautious 89 %, nether 89 %); 176 unreachable, 259 timeouts | – |
+
+**B legs** (n = 15): nether_ready → portal p50 404 / p90 634 s (this includes the golden helmet); portal → Nether 5.6 / 6.1 s; Nether → excursion 14.3 / 18.1 s; excursion → return 14.6 / 30.1 s; nether_ready → return_ok 451 / 666 s.
+- Of the 17 runs that reached `nether_ready`, 16 built a portal (r13 then crashed), and 15 completed the round trip.
+- **Portal strategy:** lava cast every time, 16 of 16 built. 178 cells cast with **0 failed casts**. 178 lava fetches, 6 failed attempts. Site failures: 8 (aim ×2, pool access ×5, water cell ×1), all recovered.
+- **Lava search:** `lava_pool_known` in 19/20 runs at p50 6 s, since pools are remembered from loaded chunks while mining. 10 pools were rejected for "no safe stand", always recovered by another pool.
+- **Golden helmet:** the objective ran in every B run, and 17 runs hold one.
+- **Nether:** 15 controlled excursions, all on foot. 0 arrivals without a safe cell. 1 Nether death (r13, "tried to swim in lava to escape Piglin"). 0 retreats were needed.
+
+**Deaths by phase:** 17 before `nether_ready` and 5 after (r02 ×3 near its site and after losing its gear; r13 ×2).
+- Killers: zombie 10, drowned 4, skeleton 3, creeper 1, spider 1, guardian 1, zombie villager 1, lava 1.
+- 15 of the 22 deaths were at 0 armor, 11 while fleeing, 11 bare-handed. Deaths cascade in struggling runs: r09 had 5, r02, r04 and part2-r01 had 2–3 each.
+
+**Top failure signatures:**
+1. **Early-game death cascades** (r04, r09, part2-r01; r02 after its first death). A first death costs the stone tools, and later deaths follow while bare-handed during flee or cover, at the shore (drowned, guardian) and at night. This is A-phase survival behaviour, and the 70-minute B limit exposes more of it than A's 45 minutes did.
+2. **`STALLED|obtain|wooden_pickaxe|…|step=collect`**: 13 occurrences in 2 runs, terminal in part2-r01. Re-collecting wood after deaths stalls.
+3. **B-phase:**
+   - `INFRA|buildNetherPortal`: 20 non-terminal occurrences in 7 runs. The server rejected mineflayer `equip` clicks while buckets were being swapped, which costs time.
+   - Pool rejections from "no safe stand".
+   - r02: deaths near the portal site at an open area cascaded into a timeout.
+
+**Gate: milestone B FAILS on deaths/run (1.10 > 1.0).** The reach rate and every portal and Nether metric pass. The leading cause is diagnosed (early-game death cascades), so C should not start: the next round should fix the death classes and re-gate B on a new held-out set.

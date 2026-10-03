@@ -9,6 +9,8 @@ import { obtain } from './generic/obtain.js'
 import { recoverItems } from './generic/recover.js'
 import { smelt } from './generic/smelt.js'
 import { findLavaPool } from './progression/lava.js'
+import { netherExcursion, usePortal } from './progression/nether.js'
+import { buildNetherPortal } from './progression/portal.js'
 import type { SkillRunner } from './runner.js'
 import { defend, flee } from './survival/combat.js'
 import { cover } from './survival/cover.js'
@@ -24,5 +26,12 @@ export function registerM0Skills (runner: SkillRunner): SkillRunner {
 export function registerASkills (runner: SkillRunner): SkillRunner {
   registerM0Skills(runner)
   for (const s of [explore, relocate, mine, smelt, hunt, fillBucket, obtain, recoverItems, findLavaPool, escapeLava, surfaceForAir, escapeSuffocation, defend, flee, cover, eat, equipGear, manageInventory, pickupDrops, holdSafe, shelter, rest]) runner.register(s)
+  return runner
+}
+
+/** Milestone B: everything in A plus the portal builder and the Nether trip (architecture §6.1 progression skills). */
+export function registerBSkills (runner: SkillRunner): SkillRunner {
+  registerASkills(runner)
+  for (const s of [buildNetherPortal, usePortal, netherExcursion]) runner.register(s)
   return runner
 }

@@ -19,18 +19,28 @@ export type EntityInfo = {
 }
 export type Hazard = { kind: 'lava' | 'fire' | 'void' | 'water'; pos: V3; dist: number }
 
-export type LocationKind = 'spawn' | 'bed' | 'crafting_table' | 'furnace' | 'chest' | 'lava_pool' | 'village' | 'death' | 'mine_entry' | 'ruined_portal' | 'animals'
+export type LocationKind = 'spawn' | 'bed' | 'crafting_table' | 'furnace' | 'chest' | 'lava_pool' | 'village' | 'death' | 'mine_entry' | 'ruined_portal' | 'animals' | 'portal_ow' | 'portal_nether' | 'portal_site'
 export type Location = {
   kind: LocationKind; dim: Dim; pos: V3; confidence: number; source: 'observed' | 'built'; lastSeen: number
   /** Kind-specific facts, e.g. a lava pool's source-block count. */
   detail?: Record<string, number | boolean | string>
 }
 
+/**
+ * A dimension change seen by the client (respawn packet): where the bot left and
+ * arrived, and why. `portal` unless a death preceded it (milestone B: return_ok
+ * needs a portal transition, verified from the client's own dimension state).
+ */
+export type Transition = { from: Dim; to: Dim; t: number; fromPos: V3; toPos: V3; cause: 'portal' | 'death' }
+
 export type WorldMemory = {
   locations: Location[]
   explored: Record<Dim, Set<string>>
   blacklist: { key: string; until: number; reason: string }[]
   deaths: { pos: V3; dim: Dim; t: number; lost?: Record<string, number>; cause?: string | null }[]
+  transitions: Transition[]
+  /** Nether excursions: farthest horizontal distance from the arrival portal during a visit (milestone B). */
+  excursions: { t: number; dist: number; portal: V3 }[]
 }
 
 /** Architecture §8.1 — M0 subset (no recovery state yet). */

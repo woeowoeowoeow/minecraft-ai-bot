@@ -35,8 +35,8 @@ export const NavGoalS = z.object({
   kind: z.enum(['block', 'near', 'xz', 'y', 'entity', 'away', 'reach']),
   target: z.union([Vec3S, z.number()]),
   range: z.number().optional(),
-  /** 'excavate': reach a buried `near`/`block` target by controlled excavation even when it is shallow or uncovered; 'walk': pathfinder only. */
-  mode: z.enum(['auto', 'excavate', 'walk']).optional(),
+  /** 'excavate': reach a buried `near`/`block` target by controlled excavation even when it is shallow or uncovered; 'walk': pathfinder only, no digging; 'path': pathfinder with digging, never controlled excavation (short moves in a work area). */
+  mode: z.enum(['auto', 'excavate', 'walk', 'path']).optional(),
   /** Plan with the strong dry-land preference from the start (fleeing aquatic mobs, inland relocation). */
   dry: z.boolean().optional(),
 })
@@ -138,6 +138,8 @@ export const EventTypeS = z.enum([
   'cover', 'death_context', 'schedule',
   // Shoreline food risk: rejected and abandoned food targets, inland relocations.
   'food_risk',
+  // Milestone B: portal construction steps, lava-pool candidates, Nether arrival and excursion.
+  'portal', 'lava_search', 'nether',
 ])
 export type EventType = z.infer<typeof EventTypeS>
 
@@ -222,7 +224,7 @@ export const DecisionResponseS = z.object({
 export type DecisionResponse = z.infer<typeof DecisionResponseS>
 
 // ── Bot process config (evaluator → bot). Never contains the seed. ───────
-export const ScenarioS = z.enum(['m0', 'navbench', 'a'])
+export const ScenarioS = z.enum(['m0', 'navbench', 'a', 'b'])
 export type Scenario = z.infer<typeof ScenarioS>
 
 export const BotConfigS = z.object({
@@ -294,12 +296,14 @@ export const BotResultS = z.object({
   physicsCorrections: z.number(),
   interrupts: z.number().optional(),
   navbench: z.array(NavBenchTrialS).optional(),
+  /** Milestone B: the portal the bot built (lit interior cell) and the one it arrived at in the Nether. */
+  portal: z.object({ ow: Vec3S.nullable(), nether: Vec3S.nullable(), strategy: z.string().nullable() }).optional(),
 })
 export type BotResult = z.infer<typeof BotResultS>
 
 export const GroundTruthS = z.object({
   t: z.number(),       // seconds since evaluator run start
-  kind: z.enum(['server_ready', 'join', 'leave', 'death', 'advancement', 'kick', 'moved_wrongly', 'inventory', 'position', 'server_error', 'fixture']),
+  kind: z.enum(['server_ready', 'join', 'leave', 'death', 'advancement', 'kick', 'moved_wrongly', 'inventory', 'position', 'server_error', 'fixture', 'dimension', 'portal_check']),
   data: z.record(z.string(), z.unknown()),
 })
 export type GroundTruth = z.infer<typeof GroundTruthS>
@@ -340,6 +344,7 @@ export const RunSummaryS = z.object({
   botExit: z.object({ code: z.number().nullable(), signal: z.string().nullable() }),
   artifacts: z.object({ complete: z.boolean(), missing: z.array(z.string()) }),
   navbench: z.array(NavBenchTrialS).optional(),
+  portal: z.object({ ow: Vec3S.nullable(), nether: Vec3S.nullable(), strategy: z.string().nullable() }).optional(),
 })
 export type RunSummary = z.infer<typeof RunSummaryS>
 

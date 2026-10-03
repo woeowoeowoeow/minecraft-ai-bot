@@ -8,12 +8,17 @@ import { UNDERGROUND } from '../../version.js'
 import { sleep } from '../runner.js'
 import { Searcher } from '../generic/explore.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
+import type { WorldState } from '../../observer/types.js'
 
 const Params = z.object({ maxSteps: z.number().int().positive().default(8) })
 type P = z.infer<typeof Params>
 
+/** A remembered pool big enough for a cast that the portal builder has not rejected. */
+function usable (s: WorldState): boolean {
+  return s.memory.locations.some(l => l.kind === 'lava_pool' && l.dim === 'overworld' && Number(l.detail?.sources ?? 0) >= progression.A.lavaPoolMinSources && l.detail?.unusable !== true)
+}
 function known (ctx: SkillCtx): boolean {
-  return ctx.state().memory.locations.some(l => l.kind === 'lava_pool' && l.dim === 'overworld' && Number(l.detail?.sources ?? 0) >= progression.A.lavaPoolMinSources)
+  return usable(ctx.state())
 }
 
 /** Feet level for the lava search: a few blocks above the 1.16.1 lava level. */
@@ -23,7 +28,7 @@ export const findLavaPool: SkillDef<P, { steps: number }> = {
   id: 'findLavaPool',
   level: 'progression',
   params: Params,
-  isSatisfied: (s) => s.memory.locations.some(l => l.kind === 'lava_pool' && l.dim === 'overworld' && Number(l.detail?.sources ?? 0) >= progression.A.lavaPoolMinSources),
+  isSatisfied: (s) => usable(s),
   preconditions: (s) => Object.keys(s.inventory).some(k => k.endsWith('_pickaxe')) ? { ok: true } : { ok: false, reason: 'needs a pickaxe to dig down', missing: [{ item: 'stone_pickaxe', count: 1 }] },
   timeoutMs: (_s, p) => 120_000 + 60_000 * p.maxSteps,
   stallMs: 120_000,

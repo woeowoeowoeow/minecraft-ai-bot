@@ -86,7 +86,7 @@ export class Recovery {
    * STATE_INCONSISTENT resyncs first. Movement, search, combat and watchdog
    * failures retry, then relocate, then switch strategy, then suspend.
    */
-  handle (obj: Objective, f: Failure, opts: { persistent?: boolean; bounded?: boolean } = {}): RecoveryAction {
+  handle (obj: Objective, f: Failure, opts: { persistent?: boolean; bounded?: boolean; noRelocate?: boolean } = {}): RecoveryAction {
     const o = this.get(obj.id)
     o.total++
     const sigN = (o.bySig[f.signature] = (o.bySig[f.signature] ?? 0) + 1)
@@ -116,7 +116,8 @@ export class Recovery {
       if (f.class === 'STATE_INCONSISTENT' && sigN <= LADDER.l2PerSignature) return { kind: 'resync', level: 'L2', note: 'resync inventory and retry' }
       if (f.class === 'MISSING_RESOURCE' && sigN <= 1) return { kind: 'retry', level: 'L2', note: 'retry: obtain re-resolves from the inventory' }
       if (NAVISH.has(f.class) && sigN === 1) return { kind: 'retry', level: 'L2', note: 'retry (failed targets are blacklisted)' }
-      if (NAVISH.has(f.class) && sigN === 2) return { kind: 'relocate', level: 'L2', note: 'relocate, then retry' }
+      // Nether objectives never take a relocation walk (milestone B): they retry in place.
+      if (NAVISH.has(f.class) && sigN === 2) return opts.noRelocate ? { kind: 'retry', level: 'L2', note: 'retry again (no relocation for this objective)' } : { kind: 'relocate', level: 'L2', note: 'relocate, then retry' }
     }
     // L3: the next strategy, then suspension.
     o.bySig = {}

@@ -42,8 +42,8 @@ export const REST_BELOW = 10
 
 /** Bulk blocks: picked up by the skills that dig them, never worth preempting an objective for. */
 const BULK = /^(cobblestone|dirt|stone|gravel|sand|grass_block|coarse_dirt|netherrack|.*_planks|stick)$/
-/** Objective skills that collect their own drops. */
-const SELF_COLLECTING = new Set(['collect', 'mine', 'hunt', 'obtain'])
+/** Objective skills that collect their own drops, or dig bulk blocks not worth a detour (portal site work). */
+const SELF_COLLECTING = new Set(['collect', 'mine', 'hunt', 'obtain', 'buildNetherPortal', 'netherExcursion', 'usePortal'])
 
 export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: string | null; priority: Priority | null }): Interrupt | null {
   const b = s.body

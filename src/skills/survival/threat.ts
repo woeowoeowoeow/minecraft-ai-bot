@@ -2,7 +2,7 @@
 // count, the bot's health, armor, weapon and shield, and terrain. Pure over
 // WorldState, so the controller's interrupt check and the combat skills agree.
 import type { EntityInfo, WorldState } from '../../observer/types.js'
-import { MOB_THREATS, NIGHT, WEAPONS } from '../../version.js'
+import { GOLDEN_ARMOR, MOB_THREATS, NIGHT, WEAPONS } from '../../version.js'
 import { isAquatic } from './aquatic.js'
 
 export type MobScore = { e: EntityInfo; t: number; ranged: boolean }
@@ -33,9 +33,16 @@ const MELEE_ALERT = 10
 /** The interrupt fires when the nearest scoring mob is this close (melee), or in its range (ranged). */
 const ENGAGE_DIST = 8
 
+/** Surface night (hostile spawning under the open sky): only the Overworld has one. */
 export function isNight (s: WorldState): boolean {
+  if (s.dim !== 'overworld') return false
   const t = s.vitals.timeOfDay
   return t >= NIGHT.start && t < NIGHT.end
+}
+
+/** Wearing any golden armor piece: piglins leave the bot alone. */
+export function wearsGold (s: WorldState): boolean {
+  return [s.equipment.head, s.equipment.chest, s.equipment.legs, s.equipment.feet].some(x => x !== null && GOLDEN_ARMOR.has(x))
 }
 
 /** Dark enough for spiders to be hostile (1.16.1: brightness below 0.5 ≈ light ≤ 11), approximated. */
@@ -47,9 +54,10 @@ function dark (s: WorldState): boolean {
 export function mobThreat (e: EntityInfo, s: WorldState): MobScore | null {
   if (e.kind !== 'hostile' || e.name === 'zombified_piglin') return null
   const info = MOB_THREATS[e.name] ?? { weight: 1, range: 2 }
-  const ranged = Boolean(info.ranged) || (e.name === 'drowned' && e.held === 'trident')
+  const ranged = Boolean(info.ranged) || (e.name === 'drowned' && e.held === 'trident') || (e.name === 'piglin' && e.held === 'crossbow')
   const range = ranged ? Math.max(info.range, 12) : MELEE_ALERT
   if (e.dist > range) return null
+  if (e.name === 'piglin' && wearsGold(s) && e.dist > 3) return null
   if (info.neutral) {
     if (e.name === 'spider' ? !dark(s) && e.dist > 2.5 : e.dist > 3) return null
   }

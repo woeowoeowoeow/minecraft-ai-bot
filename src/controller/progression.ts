@@ -200,7 +200,7 @@ export class ProgressionController {
       if (i.priority <= P.threat && res.failure && !this.died && !this.suppressRepeat(res.failure.signature)) {
         // P0/P1 failures are recorded (combat and hazards matter for diagnosis); P2 misses are not.
         const bundle = this.d.telemetry.failureBundle(`${res.failure.class}-${i.id}`, res.failure, { interrupt: i }, 120)
-        this.d.telemetry.recordFailure({ t: this.d.state().t, class: res.failure.class, signature: res.failure.signature, objective: this.d.state().control.objective?.id ?? null, milestone: 'A', ladderLevel: i.priority === P.emergency ? 'P0' : 'P1', bundle })
+        this.d.telemetry.recordFailure({ t: this.d.state().t, class: res.failure.class, signature: res.failure.signature, objective: this.d.state().control.objective?.id ?? null, milestone: this.d.state().control.objective?.milestone ?? this.d.target, ladderLevel: i.priority === P.emergency ? 'P0' : 'P1', bundle })
       }
     }
   }
@@ -242,16 +242,30 @@ export class ProgressionController {
 
   private async act (a: RecoveryAction, obj: Objective): Promise<void> {
     if (a.kind === 'resync') { await this.d.resync(); await new Promise(r => setTimeout(r, 1000)) }
-    if (a.kind === 'relocate') await this.runPreemptible('relocate', {}, P.objective)
+    if (a.kind === 'relocate') await this.relocate(obj)
     if (a.kind === 'suspend') {
       // Suspending only helps when something else can be done meanwhile.
       const alt = nextObjective(this.d.requirements, this.d.state(), id => id === obj.id || this.recovery.isSuspended(id))
       if (!alt) {
         this.recovery.unsuspend(obj.id)
         this.d.bus.emit('recovery_step', { level: 'L3', action: 'suspend_skipped', objective: obj.id, note: 'no other objective available; relocating instead' })
-        await this.runPreemptible('relocate', {}, P.objective)
+        await this.relocate(obj)
       }
     }
+  }
+
+  /**
+   * L2 relocation. In the Nether a search walk is the hazard (lava, drops): the B-specific
+   * move is a retreat through the remembered portal to the Overworld, from where the
+   * policy re-enters for a fresh attempt.
+   */
+  private async relocate (obj: Objective): Promise<void> {
+    if (this.d.state().dim === 'the_nether' && this.d.runner.has('usePortal')) {
+      this.d.bus.emit('recovery_step', { level: 'L2', action: 'retreat', objective: obj.id, note: 'Nether: retreat through the portal instead of a search walk' }, 'warn')
+      await this.runPreemptible('usePortal', { to: 'overworld' }, P.objective)
+      return
+    }
+    await this.runPreemptible('relocate', {}, P.objective)
   }
 
   /**
@@ -354,7 +368,7 @@ export class ProgressionController {
         }
 
         const failure = failed.failure!
-        const action = this.recovery.handle(o, failure, { persistent: def?.persistent, bounded: def?.bounded })
+        const action = this.recovery.handle(o, failure, { persistent: def?.persistent, bounded: def?.bounded, noRelocate: def?.noRelocate })
         const isNav = failure.class.startsWith('NAV_') || failure.class === 'STALLED' || failure.class === 'SKILL_TIMEOUT'
         const repeat = this.suppressRepeat(failure.signature)
         const bundle = repeat ? null : this.d.telemetry.failureBundle(failure.class, failure, { objective: o, result: failed, action }, isNav ? 300 : 120)

@@ -6,16 +6,16 @@ import { once } from 'node:events'
 import * as mfNs from 'mineflayer'
 import { Controller, type ControllerResult } from '../controller/controller.js'
 import { ProgressionController } from '../controller/progression.js'
-import { A_FLAGS } from '../planner/milestones.js'
+import { A_FLAGS, B_FLAGS, builtPortal } from '../planner/milestones.js'
 import { resyncInventory } from '../skills/generic/craft.js'
 import { runNavBench } from '../controller/navbench.js'
 import { loadPathfinder, PathfinderNavigator } from '../nav/pathfinder.js'
 import { EventBus } from '../observer/events.js'
 import { Observer } from '../observer/observer.js'
-import { A_MILESTONES, A_REQUIREMENTS, M0_REQUIREMENTS, MILESTONES } from '../planner/policy.js'
+import { A_MILESTONES, A_REQUIREMENTS, B_MILESTONES, B_REQUIREMENTS, M0_REQUIREMENTS, MILESTONES } from '../planner/policy.js'
 import { makeReasoner, type Script } from '../planner/reasoner.js'
 import { BotConfigS, type BotResult, type NavBenchTrial } from '../schema/index.js'
-import { registerASkills, registerM0Skills } from '../skills/registry.js'
+import { registerASkills, registerBSkills, registerM0Skills } from '../skills/registry.js'
 import { SkillRunner } from '../skills/runner.js'
 import type { SkillEnv } from '../skills/types.js'
 import { Telemetry } from '../telemetry/telemetry.js'
@@ -60,9 +60,12 @@ async function main (): Promise<void> {
   let finished = false
   let controller: Controller | null = null
   let progression: ProgressionController | null = null
-  const milestoneDefs = cfg.scenario === 'a' ? A_MILESTONES : MILESTONES
+  const progressive = cfg.scenario === 'a' || cfg.scenario === 'b'
+  const milestoneDefs = cfg.scenario === 'b' ? B_MILESTONES : cfg.scenario === 'a' ? A_MILESTONES : MILESTONES
+  const flagDefs = cfg.scenario === 'b' ? { ...A_FLAGS, ...B_FLAGS } : A_FLAGS
   let navbench: NavBenchTrial[] | undefined
   let stopRequested = false
+  const portalSummary = () => portalSummaryOf(obs)
 
   const finish = async (r: ControllerResult, code: number): Promise<never> => {
     if (finished) return new Promise<never>(() => {})
@@ -75,7 +78,7 @@ async function main (): Promise<void> {
         outcome: r.outcome, reason: r.reason,
         elapsedS: Math.round((Date.now() - started) / 1000), gameTicks: s.tick,
         milestones: Object.fromEntries(Object.keys(milestoneDefs).map(k => [k, s.milestones[k] ?? null])),
-        flags: progression ? Object.fromEntries(Object.keys(A_FLAGS).map(k => [k, progression!.flags[k] ?? null])) : {},
+        flags: progression ? Object.fromEntries(Object.keys(flagDefs).map(k => [k, progression!.flags[k] ?? null])) : {},
         deaths: obs.memory.deaths.map(d => ({ t: d.t, dim: d.dim, message: d.cause ?? null })),
         terminalFailure: r.terminalFailure,
         failures: telemetry.failures,
@@ -85,6 +88,7 @@ async function main (): Promise<void> {
         physicsCorrections: obs.physicsCorrections,
         interrupts: progression?.interrupts,
         navbench,
+        portal: cfg.scenario === 'b' ? portalSummary() : undefined,
       }
       bus.emit('run_end', { outcome: r.outcome, reason: r.reason }, r.outcome === 'goal_reached' ? 'info' : 'warn')
       telemetry.writeDigest('run_end')
@@ -157,7 +161,7 @@ async function main (): Promise<void> {
     random,
     capture: label => { telemetry.snapshot(label) },
   }
-  const runner = cfg.scenario === 'a' ? registerASkills(new SkillRunner(env)) : registerM0Skills(new SkillRunner(env))
+  const runner = cfg.scenario === 'b' ? registerBSkills(new SkillRunner(env)) : cfg.scenario === 'a' ? registerASkills(new SkillRunner(env)) : registerM0Skills(new SkillRunner(env))
 
   let script: Script = {}
   if (cfg.reasoner === 'scripted') {
@@ -174,11 +178,11 @@ async function main (): Promise<void> {
     return void finish({ outcome: 'goal_reached', reason: `navbench ${ok}/${navbench.length} trials ok`, terminalFailure: null }, EXIT.ok)
   }
 
-  if (cfg.scenario === 'a') {
+  if (progressive) {
     progression = new ProgressionController({
       runner, bus, telemetry,
       state: () => obs.state(), setObjective: o => obs.setObjective(o),
-      requirements: A_REQUIREMENTS, milestones: A_MILESTONES, flags: A_FLAGS, target: 'A', deadline,
+      requirements: cfg.scenario === 'b' ? B_REQUIREMENTS : A_REQUIREMENTS, milestones: milestoneDefs, flags: flagDefs, target: cfg.scenario === 'b' ? 'B' : 'A', deadline,
       waitForRespawn: async () => { await withTimeout(once(bot, 'spawn'), 15_000, 'respawn').catch(() => {}); await new Promise(r => setTimeout(r, 1500)) },
       resync: async () => { try { if (bot.currentWindow) bot.closeWindow(bot.currentWindow) } catch { /* ignore */ } await resyncInventory(bot) },
       afterDeath: () => { nav.stop(); obs.afterDeath() },
@@ -211,6 +215,14 @@ async function main (): Promise<void> {
     r = { outcome: 'infra_error', reason: `controller crashed: ${String(e)}`, terminalFailure: { class: 'INFRA', signature: 'INFRA|controller|-|-|exception', bundle } }
   }
   await finish(r, r.outcome === 'goal_reached' ? EXIT.ok : r.outcome === 'infra_error' ? EXIT.infra : EXIT.unrecoverable)
+}
+
+/** The portal the bot built and the Nether portal it remembered (bot memory, for the evaluator's check). */
+function portalSummaryOf (obs: Observer): { ow: [number, number, number] | null; nether: [number, number, number] | null; strategy: string | null } {
+  const s = obs.state()
+  const ow = builtPortal(s)
+  const nether = s.memory.locations.find(l => l.kind === 'portal_nether')
+  return { ow: ow ? ow.pos.map(Math.floor) as [number, number, number] : null, nether: nether ? nether.pos.map(Math.floor) as [number, number, number] : null, strategy: ow ? String(ow.detail?.strategy ?? '') || null : null }
 }
 
 function safe<T> (fn: () => T): T | null {

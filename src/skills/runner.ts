@@ -115,7 +115,9 @@ export class SkillRunner {
           metrics.navCalls++
           const remaining = Math.max(1000, deadline - this.now())
           const timeoutMs = Math.min(o?.timeoutMs ?? env.nav.budgetMs(goal), remaining)
-          const r = await env.nav.goto(goal, { profile: o?.profile ?? 'overworld', timeoutMs, signal: ac.signal, onProgress: () => heartbeat() })
+          // Movement profile follows the dimension unless the skill asks for one (milestone B: `nether`).
+          const profile = o?.profile ?? (env.state().dim === 'the_nether' ? 'nether' : 'overworld')
+          const r = await env.nav.goto(goal, { profile, timeoutMs, signal: ac.signal, onProgress: () => heartbeat() })
           if (!r.ok) metrics.navFailures++
           if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
           return r

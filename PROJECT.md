@@ -10,4 +10,4 @@
 
 **Success:** multiple unattended wins on held-out seeds. Report every attempt, including failures, timeouts, and interventions, under `docs/evaluation.md`.
 
-**Current scope:** M0 re-gated on 1.16.1. **Milestone A passed** its gate of 2026-10-01 (`20261001-114138-a-a-gate3`: 17/20 = 85 %, 0.30 deaths/run, 0 interventions). Milestone B has not started.
+**Current scope:** M0 re-gated on 1.16.1. **Milestone A passed** its gate of 2026-10-01 (`20261001-114138-a-a-gate3`: 17/20 = 85 %, 0.30 deaths/run, 0 interventions). **Milestone B gate of 2026-10-02/03 failed on deaths only:** 15/20 = 75 % reached B (CI 53–89 %, ≥ 60 % ✓) but 1.10 deaths/run (≤ 1 ✗); `20261002-063440-b-b-gate` + `20261002-155811-b-b-gate-part2` (a host crash interrupted part 1). Milestone C has not started.

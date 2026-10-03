@@ -25,5 +25,13 @@
     "foodBuffer": 3,
     "foodBufferSearchSteps": 2,
     "kitWoodMargin": 4
+  },
+  "B": {
+    "excursionMin": 12,
+    "foodItems": 4,
+    "portalSiteRadius": 9,
+    "lavaClearance": 4,
+    "portalNear": 4,
+    "goldSearchSteps": 6
   }
 }

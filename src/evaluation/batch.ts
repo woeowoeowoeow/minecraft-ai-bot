@@ -8,6 +8,7 @@ import { resolveJava } from './java.js'
 import { ProcessRegistry } from './procs.js'
 import { aggregate, renderReport, type BatchFailureRow } from './report.js'
 import { renderSurvival } from './survival-report.js'
+import { renderPortal } from './portal-report.js'
 import { FIXTURES, ROOT, runOne, WORLDS, type FixtureName } from './run.js'
 import { MC_VERSION } from '../version.js'
 import { SERVER_PROPERTIES } from './server.js'
@@ -15,10 +16,10 @@ import { SERVER_PROPERTIES } from './server.js'
 export const RUNS = join(ROOT, 'runs')
 
 /** Gate time limits from milestones.md (seconds from bot spawn). */
-export const GATE_LIMIT_S: Record<string, number> = { M0: 600, A: 2700 }
+export const GATE_LIMIT_S: Record<string, number> = { M0: 600, A: 2700, B: 4200 }
 
 /** Batch target milestone per scenario. */
-export const SCENARIO_TARGET: Record<string, string> = { m0: 'M0', a: 'A', navbench: 'navbench' }
+export const SCENARIO_TARGET: Record<string, string> = { m0: 'M0', a: 'A', b: 'B', navbench: 'navbench' }
 
 /** Fresh 64-bit world seed from the OS CSPRNG (evaluation.md §2.1). */
 export function freshSeed (): string {
@@ -164,7 +165,8 @@ export function writeBatchReport (batchId: string, metaOverride?: Record<string,
     reasoner: String(meta.reasoner), limitMin: meta.limitMin, date: String(meta.startedAt ?? ''), server: (meta.server ?? {}) as Record<string, string>,
     fixture: (meta.fixture as string | null) ?? null, mcVersion: meta.mcVersion as string | undefined, java: meta.java as string | undefined,
   }, agg, runs)
-  const report = meta.scenario === 'a' ? base.replace('## Skills', `${renderSurvival(dir, runs)}\n## Skills`) : base
+  const extra = meta.scenario === 'b' ? `${renderPortal(dir, runs)}\n${renderSurvival(dir, runs)}` : meta.scenario === 'a' ? renderSurvival(dir, runs) : ''
+  const report = extra ? base.replace('## Skills', `${extra}\n## Skills`) : base
   writeFileSync(join(dir, 'report.md'), report)
   return report
 }

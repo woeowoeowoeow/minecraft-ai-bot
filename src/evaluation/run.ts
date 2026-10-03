@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { BotResultS, type BotConfig, type BotResult, type GroundTruth, type Outcome, type RunSummary, type Scenario } from '../schema/index.js'
-import { netherReadyInventory, parseInventoryData, parseServerLine } from './groundtruth.js'
+import { milestoneBVerified, netherReadyInventory, parseDimension, parseInventoryData, parseServerLine } from './groundtruth.js'
 import { resolveJava, type JavaRuntime } from './java.js'
 import { terminate, waitExit, type ProcessRegistry } from './procs.js'
 import { MC_VERSION } from '../version.js'
@@ -43,7 +43,7 @@ export type RunOptions = {
  * bot joins, plus optional server-property overrides. Fixture batches are labeled
  * and never scored.
  */
-export type FixtureName = 'kit' | 'kit2' | 'excavation'
+export type FixtureName = 'kit' | 'kit2' | 'excavation' | 'bkit'
 export type Fixture = { commands: (user: string) => string[]; properties?: Record<string, string> }
 export const FIXTURES: Record<FixtureName, Fixture> = {
   // Milestone-A-like navigation kit: a pickaxe for digging, blocks for scaffolding.
@@ -56,6 +56,12 @@ export const FIXTURES: Record<FixtureName, Fixture> = {
   excavation: {
     commands: user => [`give ${user} minecraft:iron_pickaxe 2`, `give ${user} minecraft:iron_shovel 1`, `give ${user} minecraft:dirt 64`],
     properties: { difficulty: 'peaceful' },
+  },
+  // Milestone B development: the nether_ready inventory (not the lava pool, which the bot
+  // must still find), so the portal and Nether work can be exercised without the A phase.
+  bkit: {
+    commands: user => ['iron_pickaxe 1', 'iron_sword 1', 'shield 1', 'bucket 1', 'water_bucket 1', 'iron_helmet 1', 'iron_boots 1', 'flint_and_steel 1', 'cooked_beef 16', 'cobblestone 64', 'crafting_table 1', 'stick 4']
+      .map(i => `give ${user} minecraft:${i}`),
   },
 }
 
@@ -72,6 +78,14 @@ export function botEnv (cfg: BotConfig, lingerMs: number): NodeJS.ProcessEnv {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** The built-portal cell from the bot's result file, if it reported one (milestone B ground truth). */
+function readPortalClaim (resultPath: string): [number, number, number] | null {
+  try {
+    const p = (JSON.parse(readFileSync(resultPath, 'utf8')) as { portal?: { ow?: unknown } }).portal?.ow
+    return Array.isArray(p) && p.length === 3 && p.every(v => Number.isInteger(v)) ? p as [number, number, number] : null
+  } catch { return null }
+}
 
 /** A poll gap longer than this is a host suspension, not evaluator work. */
 export const HOST_SUSPEND_MS = 20_000
@@ -97,6 +111,8 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
   let botRunS: number | null = null
   let botExit: { code: number | null; signal: string | null } = { code: null, signal: null }
   let gtInventory: Record<string, number> | null = null
+  let gtDimension: string | null = null
+  let gtPortalCheck: boolean | null = null
   let gtNote = ''
   let bot: ChildProcess | null = null
   let timedOut = false
@@ -174,6 +190,19 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
       }
       const pos = await server.query(`data get entity ${username} Pos`, new RegExp(`${username} has the following entity data: \\[(-?[\\d.]+)d, (-?[\\d.]+)d, (-?[\\d.]+)d\\]`), 3000)
       if (pos) recordGt({ t: since(), kind: 'position', data: { pos: [Number(pos[1]), Number(pos[2]), Number(pos[3])].map(Math.round) } })
+      if (o.target === 'B') {
+        const dim = await server.query(`data get entity ${username} Dimension`, new RegExp(`${username} has the following entity data: "minecraft:[a-z_]+"`), 3000)
+        gtDimension = dim ? parseDimension(dim[0], username) : null
+        recordGt({ t: since(), kind: 'dimension', data: { dimension: gtDimension } })
+        // The portal the bot reports having built: is there a lit portal block at that cell?
+        const claimed = readPortalClaim(resultPath)
+        if (claimed) {
+          const [x, y, z] = claimed
+          const r = await server.query(`execute in minecraft:overworld if block ${x} ${y} ${z} minecraft:nether_portal`, /Test (passed|failed)/, 3000)
+          gtPortalCheck = r ? r[1] === 'passed' : null
+          recordGt({ t: since(), kind: 'portal_check', data: { pos: claimed, lit: gtPortalCheck } })
+        }
+      }
     } else {
       gtNote = 'server not running at end of run'
     }
@@ -228,6 +257,7 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
   // A run that claims nether_ready must hold it on the server; a run that does not claim it makes no claim to check.
   if (o.target === 'A' && gtInventory) verified = outcome === 'goal_reached' ? netherReadyInventory(gtInventory) : true
   if (o.scenario === 'navbench') verified = gtInventory ? true : null
+  if (o.target === 'B') verified = outcome === 'goal_reached' ? milestoneBVerified({ advancements, dimension: gtDimension, portalCheck: gtPortalCheck }) : true
 
   const failures = br?.failures ?? []
   const byClass: Record<string, number> = {}
@@ -260,6 +290,7 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     botExit,
     artifacts: { complete: false, missing: [] },
     navbench: br?.navbench,
+    portal: br?.portal,
   }
   const missing = REQUIRED_ARTIFACTS.filter(f => !existsSync(join(o.runDir, f)))
   summary.artifacts = { complete: missing.length === 0, missing }

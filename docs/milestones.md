@@ -49,6 +49,23 @@ The evaluator's ground-truth check (`netherReadyInventory`) verifies every inven
 
 **Information note.** The interest index (architecture §8.1) reads ore and lava positions from loaded chunk data, which includes blocks not exposed to air. The approved architecture specifies this ("ores … updated on chunkColumnLoad"), and it is client-received state. It is still stronger than a human player's view. If the project wants "exposed faces only" mining, that is a rule change, and it would need re-gating.
 
+## Milestone B predicate: exact reading (recorded 2026-10-01, before any B gate)
+
+`B` (`src/planner/milestones.ts` `milestoneB`) is first reached when all of the following hold. Everything comes from the bot's own memory and the client's dimension state. The gate itself is unchanged: 20 held-out seeds, ≥ 60 % within 70 min, ≤ 1 death/run, 0 interventions.
+- **A portal the bot built:** a remembered `portal_ow` location with source `built` and `lit`, written by `buildNetherPortal` only after it saw the six `nether_portal` interior blocks appear. A ruined portal counts only if the bot completed and lit it itself. The rule for this is the same: any obsidian already in the frame cells is used.
+- **`in_nether` through it:** the client received a dimension change Overworld → Nether (respawn packet, not a death) whose departure position lies within 4 blocks of that portal.
+- **`portal_nether` remembered:** the observer records the nether_portal block nearest the arrival point, from loaded chunk data.
+- **Controlled movement away:** during that visit the bot was at least 12 blocks (horizontal) from the arrival portal (`config/progression.json` `B.excursionMin`).
+- **`return_ok`:** a later Nether → Overworld transition that was not caused by a death, with the client then in the Overworld.
+
+The evaluator verifies a claimed B on the server: the Nether-entry advancement (`We Need to Go Deeper`) appears in the log; `data get entity Bot Dimension` reads `minecraft:overworld` at the end; and `execute if block` finds `nether_portal` at the interior cell the bot reports having built. A run that fails any of these checks is not a success.
+
+**Reasoner for B.** The architecture lists "a real `ModelClient` behind `REASONER=model`, measured against `none`" under B. The provider-neutral boundary is built (`src/planner/model.ts`: `ModelClient`, `ModelReasoner` with §5.3 validation, retry and fallback, and unit tests). No provider adapter is shipped, for two reasons:
+- A paid API dependency is excluded by AGENTS.md.
+- The subscription CLI agent is not a clean runtime provider. It is a tool-using agent with file access, so it would need sandboxing to keep the isolation rules (no seed, server log or world access), and its usage limits make it unsuitable for unattended batches.
+
+Runtime reasoning therefore stays disabled. `reasoner=none` is the B gate configuration, and the `model` vs `none` comparison is deferred until a provider is approved.
+
 ## Open items carried into A (resolved 2026-09-28)
 
 From the 1.16.1 migration. All are fixed as general causes (architecture §10.2, §10A):

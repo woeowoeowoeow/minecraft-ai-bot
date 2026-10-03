@@ -13,7 +13,7 @@ export function fakeState (over: Partial<WorldState> = {}): WorldState {
     body: { feet: 'air', head: 'air', velY: 0, fallDist: 0, light: null, covered: false },
     tools: [],
     armor: 0,
-    memory: { locations: [], explored: { overworld: new Set(), the_nether: new Set(), the_end: new Set() }, blacklist: [], deaths: [] },
+    memory: { locations: [], explored: { overworld: new Set(), the_nether: new Set(), the_end: new Set() }, blacklist: [], deaths: [], transitions: [], excursions: [] },
     control: { skillStack: [] },
     milestones: {},
     counters: { deaths: 0, reasonerCalls: 0, failuresBySignature: {}, currentFailure: null, failuresThisObjective: 0 },

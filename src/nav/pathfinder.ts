@@ -139,14 +139,69 @@ function movementsFor (bot: Bot, profile: NavProfile, dry: boolean, noDig = fals
   }
   const mm = m as unknown as { liquidCost: number }
   mm.liquidCost = dry ? DRY_LIQUID_COST : LIQUID_COST
-  if (profile !== 'overworld') {
-    // Cautious default until the nether/end/stronghold profiles are built (milestones B–D).
+  if (profile === 'nether') netherProfile(bot, m)
+  else if (profile === 'overworld_cautious') {
+    // Overworld work next to lava (portal sites and lava pools, milestone B): no parkour, drops of
+    // at most 3, and the Nether's lava step costs. The plain overworld profile (milestone A) is unchanged.
+    m.allowParkour = false
+    m.maxDropDown = 3
+    lavaCosts(bot, m)
+  }
+  else if (profile !== 'overworld') {
+    // Cautious default until the end/stronghold profiles are built (milestones D–E).
     m.allowParkour = false
     m.maxDropDown = 3
     mm.liquidCost = dry ? DRY_LIQUID_COST : LIQUID_COST + 1
   }
   waterSafe(bot, m)
   return m
+}
+
+/** Extra cost (per step) of standing in a cell with lava this close: the path keeps its distance. */
+export const NETHER_LAVA_STEP_COST = { adjacent: 40, near2: 8 } as const
+
+/**
+ * Nether profile (architecture §10, milestone B): falls and lava kill, so no parkour,
+ * drops of at most 2, no digging down (waterSafe), never digging a block that touches
+ * lava (upstream `dontCreateFlow` covers liquids above and beside), magma and soul
+ * fire avoided, and a heavy step cost next to lava. Soul sand only slows: allowed.
+ * Scaffolding with netherrack or cobblestone bridges short gaps.
+ */
+function netherProfile (bot: Bot, m: PfMovements): void {
+  const reg = bot.registry
+  m.allowParkour = false
+  m.maxDropDown = 2
+  m.allowSprinting = false
+  const mm = m as unknown as { blocksToAvoid: Set<number>; dontCreateFlow: boolean; exclusionAreasStep: ((b: PBlock) => number)[]; exclusionAreasBreak: ((b: PBlock) => number)[] }
+  mm.dontCreateFlow = true
+  for (const n of ['magma_block', 'soul_fire', 'fire', 'lava', 'wither_rose', 'campfire', 'soul_campfire']) { const b = reg.blocksByName[n]; if (b) mm.blocksToAvoid.add(b.id) }
+  lavaCosts(bot, m)
+}
+
+/** Step cost next to lava and no breaking beside it (nether and overworld_cautious profiles). */
+function lavaCosts (bot: Bot, m: PfMovements): void {
+  const mm = m as unknown as { exclusionAreasStep: ((b: PBlock) => number)[]; exclusionAreasBreak: ((b: PBlock) => number)[] }
+  const lavaId = bot.registry.blocksByName.lava!.id
+  // Lava distance per cell, cached for a few seconds (path searches visit thousands of nodes).
+  let cache = new Map<string, number>()
+  let cacheAt = Date.now()
+  const lavaDist = (p: Vec3): number => {
+    if (Date.now() - cacheAt > 3000 || cache.size > 50_000) { cache = new Map(); cacheAt = Date.now() }
+    const k = `${p.x},${p.y},${p.z}`
+    const hit = cache.get(k)
+    if (hit !== undefined) return hit
+    let d = 3
+    for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) for (let dy = -2; dy <= 1; dy++) {
+      const r = Math.max(Math.abs(dx), Math.abs(dz))
+      if (r < d && bot.blockAt(p.offset(dx, dy, dz), false)?.type === lavaId) d = r
+    }
+    cache.set(k, d)
+    return d
+  }
+  const lavaWithin = (p: Vec3, r: number) => lavaDist(p) <= r
+  mm.exclusionAreasStep.push(b => lavaWithin(b.position, 1) ? NETHER_LAVA_STEP_COST.adjacent : lavaWithin(b.position, 2) ? NETHER_LAVA_STEP_COST.near2 : 0)
+  // Never break a block with lava anywhere around it (a flow into the tunnel is fatal here).
+  mm.exclusionAreasBreak.push(b => lavaWithin(b.position, 1) ? 1000 : 0)
 }
 
 /** A dry excavation start the bot failed to reach is skipped for this long (dev batch 6 r01: 16 tries of one cell). */

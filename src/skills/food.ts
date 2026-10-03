@@ -1,6 +1,6 @@
 // Food and equipment choices (pure): what to eat, what to wear.
 import mcData from 'minecraft-data'
-import { ARMOR_POINTS, COOKED_FOODS, UNSAFE_FOODS } from '../version.js'
+import { ARMOR_POINTS, COOKED_FOODS, UNSAFE_FOODS, GOLDEN_ARMOR } from '../version.js'
 import { MC_VERSION } from '../version.js'
 
 const FOODS = mcData(MC_VERSION).foodsByName
@@ -74,16 +74,25 @@ export function armorSlot (name: string): ArmorSlot | null {
   return null
 }
 
+/**
+ * Armor points, plus half a point for golden armor: piglins leave a player wearing gold
+ * alone (1.16.1), so a golden helmet replaces an iron one of equal points (milestone B,
+ * smoke r02: one gold-sword piglin took 20 HP in three hits).
+ */
+export function armorValue (name: string): number {
+  return (ARMOR_POINTS[name] ?? 0) + (GOLDEN_ARMOR.has(name) ? 0.5 : 0)
+}
+
 /** Armor in inventory that beats what is worn, one per slot (best first). */
 export function armorUpgrades (inv: Record<string, number>, worn: { head: string | null; chest: string | null; legs: string | null; feet: string | null }): { item: string; slot: ArmorSlot }[] {
   const current: Record<ArmorSlot, string | null> = { head: worn.head, torso: worn.chest, legs: worn.legs, feet: worn.feet }
   const out: { item: string; slot: ArmorSlot }[] = []
   for (const slot of ['head', 'torso', 'legs', 'feet'] as ArmorSlot[]) {
     let best: string | null = null
-    let pts = ARMOR_POINTS[current[slot] ?? ''] ?? 0
+    let pts = armorValue(current[slot] ?? '')
     for (const k of Object.keys(inv)) {
       if ((inv[k] ?? 0) <= 0 || armorSlot(k) !== slot) continue
-      const p = ARMOR_POINTS[k] ?? 0
+      const p = armorValue(k)
       if (p > pts) { pts = p; best = k }
     }
     if (best) out.push({ item: best, slot })
