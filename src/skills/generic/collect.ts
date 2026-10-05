@@ -9,6 +9,8 @@ import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
 import { nextSearchHeading, Searcher, toSurface } from './explore.js'
 import { Relocator } from './search.js'
 import type { V3 } from '../../schema/index.js'
+import { naturalTreeFilter } from '../../observer/trees.js'
+import { AQUATIC, aquaticThreats, atWater, inlandPoint } from '../survival/aquatic.js'
 
 /** Block groups: a group name matches several block names; the dropped item has the block's name. */
 const GROUPS: Record<string, (name: string) => boolean> = {
@@ -49,14 +51,18 @@ const MAX_REPLACES = 40
 
 export { nextSearchHeading }
 
-function candidates (bot: Bot, p: P, isBlacklisted: (k: string) => boolean): Vec3[] {
+function candidates (bot: Bot, p: P, isBlacklisted: (k: string) => boolean, zones: V3[] = []): Vec3[] {
   const m = blockMatcher(p.block)
   const ids = bot.registry.blocksArray.filter(b => m(b.name)).map(b => b.id)
   const me = bot.entity.position
+  const isTree = p.block === 'log' ? naturalTreeFilter(bot) : null
   return bot.findBlocks({ matching: ids, maxDistance: p.maxDist, count: 96 })
     .filter(v => !isBlacklisted(blockKey(v)))
     // Never dive for a block: one with water above it is under water (river and lake floors).
     .filter(v => !/water|kelp|seagrass|bubble_column/.test(bot.blockAt(v.offset(0, 1, 0), false)?.name ?? ''))
+    // Wood: only logs of natural surface trees (round-3 gate r02/r08: shipwreck timbers on the
+    // sea floor), and none near a wood target abandoned under threat.
+    .filter(v => !isTree || (!inWoodZone(zones, v.x, v.z) && isTree(v)))
     // Prefer near and low targets: high logs need towering (no scaffolding at M0).
     .map(v => ({ v, score: v.distanceTo(me) + 4 * Math.max(0, v.y - me.y - 2) }))
     .sort((a, b) => a.score - b.score)
@@ -84,10 +90,43 @@ export function blacklistCluster (bot: Bot, target: Vec3, matches: (name: string
   return n
 }
 
+/**
+ * A wood target abandoned under threat (round-3 gate r02/r08: re-chosen after every flee and
+ * respawn): the area around it is left for WOOD_DANGER.ttlS, across deaths. Interrupts that
+ * mean danger there; an aquatic hostile about or the head under water count too.
+ */
+export const WOOD_DANGER = { r: 24, ttlS: 1800, interrupts: ['flee', 'surface', 'death'], inlandMoves: AQUATIC.maxRelocations } as const
+const ZONE_PREFIX = 'wood_zone:'
+
+/** Active wood danger zones (blacklist entries outlive deaths). */
+export function woodZones (s: WorldState): V3[] {
+  return s.memory.blacklist
+    .filter(b => b.key.startsWith(ZONE_PREFIX) && b.until > s.t)
+    .map(b => b.key.slice(ZONE_PREFIX.length).split(',').map(Number) as V3)
+}
+
+export function inWoodZone (zones: V3[], x: number, z: number): boolean {
+  return zones.some(c => Math.hypot(c[0] - x, c[2] - z) <= WOOD_DANGER.r)
+}
+
+/** Why a cancelled walk to (or dig of) a wood target leaves that area, or null when it was a plain preemption. */
+export function woodDanger (s: WorldState, by: string | undefined): string | null {
+  if (by && (WOOD_DANGER.interrupts as readonly string[]).includes(by)) return by
+  if (aquaticThreats(s).length > 0) return 'aquatic'
+  if (s.body.head === 'water') return 'water'
+  return null
+}
+
+export function woodZoneKey (t: V3): string {
+  return `${ZONE_PREFIX}${Math.floor(t[0])},${Math.floor(t[1])},${Math.floor(t[2])}`
+}
+
 /** Nearest remembered tree spot worth walking to (same dimension, not just visited, within TREE_SPOT.maxDist). */
 export function treeSpot (s: WorldState, isBlacklisted: (k: string) => boolean): V3 | null {
+  const zones = woodZones(s)
   const spots = s.memory.locations
     .filter(l => l.kind === 'trees' && l.dim === s.dim && !isBlacklisted(`trees:${l.pos[0]},${l.pos[2]}`))
+    .filter(l => !inWoodZone(zones, l.pos[0], l.pos[2]))
     .map(l => ({ l, d: Math.hypot(l.pos[0] - s.pos[0], l.pos[2] - s.pos[2]) }))
     .filter(x => x.d >= TREE_SPOT.minDist && x.d <= TREE_SPOT.maxDist)
     .sort((a, b) => a.d - b.d)
@@ -122,17 +161,42 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
     // A target the watchdog aborts on (stalled or timed out mid-dig or mid-pickup) is never chosen
     // again by the retry: B gate 20261002 part2-r01 went back to one log 12 times.
     let current: Vec3 | null = null
+    // The wood target being walked to or dug (near, loaded far log, or tree spot).
+    let wood: V3 | null = null
     const onAbort = () => {
-      const why = (ctx.signal.reason as { why?: string } | undefined)?.why
+      const reason = ctx.signal.reason as { why?: string; by?: string } | undefined
+      const why = reason?.why
       if (current && (why === 'stalled' || why === 'timeout')) ctx.env.blacklist(blockKey(current), `collect_${why}`)
+      // Interrupted by danger on the way to wood: never re-chosen after the flee or the respawn.
+      const danger = wood && why === 'cancelled' ? woodDanger(ctx.state(), reason?.by) : null
+      if (wood && danger) {
+        ctx.env.blacklist(woodZoneKey(wood), `wood_${danger}`, WOOD_DANGER.ttlS)
+        // ctx.log is silent once aborted: straight to the bus.
+        ctx.env.bus.emit('search_step', { skill: 'collect', n: 0, for: p.block, target: wood.map(Math.floor), mode: 'wood_danger', why: danger, r: WOOD_DANGER.r }, 'warn')
+      }
     }
     ctx.signal.addEventListener('abort', onAbort, { once: true })
+    const zones = () => isLog ? woodZones(ctx.state()) : []
+    let inlandMoves = 0
     // Trees grow on the surface: leave the mine first.
-    if (p.block === 'log' && ctx.state().body.covered && !candidates(bot, p, k => ctx.env.isBlacklisted(k)).some(v => Math.abs(v.y - bot.entity.position.y) < 4)) await toSurface(ctx)
+    if (p.block === 'log' && ctx.state().body.covered && !candidates(bot, p, k => ctx.env.isBlacklisted(k), zones()).some(v => Math.abs(v.y - bot.entity.position.y) < 4)) await toSurface(ctx)
 
     while (have(ctx.state(), p) < p.count) {
       ctx.checkAbort()
-      const list = candidates(bot, p, k => ctx.env.isBlacklisted(k))
+      wood = null
+      // Aquatic hostiles about and the bot at the water: move inland before choosing any wood (bounded).
+      if (isLog && inlandMoves < WOOD_DANGER.inlandMoves) {
+        const st = ctx.state()
+        const to = aquaticThreats(st).length > 0 && atWater(st) ? inlandPoint(st) : null
+        if (to) {
+          inlandMoves++
+          ctx.log('search_step', { n: 0, for: p.block, from: st.pos.map(Math.round), target: to, mode: 'inland', aquatic: aquaticThreats(st).length })
+          const r = await ctx.nav.goto({ kind: 'xz', target: to, range: 4, dry: true })
+          if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
+          continue
+        }
+      }
+      const list = candidates(bot, p, k => ctx.env.isBlacklisted(k), zones())
       // Chance drops (flint): a carried gravel block is re-placed and dug where the bot stands,
       // before any gravel in the world (re-gate 20261003 r05: lake-bed gravel dug from the
       // water trapped the bot; 18 stalls and 21 unreachable targets across the gate).
@@ -160,9 +224,10 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
         }
         if (list.length === 0) {
           // Logs beyond the normal target range but loaded: walk over first (the area is not treeless).
-          const far = isLog && spotVisits < TREE_SPOT.perRun ? candidates(bot, { ...p, maxDist: WIDE_LOG_SCAN }, k => ctx.env.isBlacklisted(k))[0] : undefined
+          const far = isLog && spotVisits < TREE_SPOT.perRun ? candidates(bot, { ...p, maxDist: WIDE_LOG_SCAN }, k => ctx.env.isBlacklisted(k), zones())[0] : undefined
           if (far) {
             spotVisits++
+            wood = [far.x, far.y, far.z]
             const from = ctx.state().pos
             ctx.log('search_step', { n: 0, for: p.block, from: from.map(Math.round), target: [far.x, far.y, far.z], mode: 'loaded_logs', dist: Math.round(far.distanceTo(bot.entity.position)) })
             const r = await ctx.nav.goto({ kind: 'xz', target: [far.x, far.y, far.z], range: 8, dry: true })
@@ -177,6 +242,7 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
           const spot = isLog && spotVisits < TREE_SPOT.perRun ? treeSpot(ctx.state(), k => ctx.env.isBlacklisted(k)) : null
           if (spot) {
             spotVisits++
+            wood = spot
             ctx.env.blacklist(`trees:${spot[0]},${spot[2]}`, 'visited', TREE_SPOT.forgetS)
             const from = ctx.state().pos
             ctx.log('search_step', { n: 0, for: p.block, from: from.map(Math.round), target: spot, mode: 'tree_spot', dist: Math.round(Math.hypot(spot[0] - from[0], spot[2] - from[2])) })
@@ -197,6 +263,7 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
       }
       const target = list[0]!
       current = target
+      if (isLog) wood = [target.x, target.y, target.z]
       targetsTried++
       const r = await ctx.nav.goto({ kind: 'reach', target: [target.x, target.y, target.z], range: 4.5 })
       if (!r.ok) {

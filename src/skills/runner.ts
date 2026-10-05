@@ -8,7 +8,8 @@ const WATCHDOG_MS = 250
 type Parent = { signal: AbortSignal; depth: number; deadline: number; heartbeat: () => void; metrics: SkillResult['metrics'] }
 
 export class AbortError extends Error {
-  constructor (readonly why: 'timeout' | 'stalled' | 'cancelled') { super(`aborted: ${why}`); this.name = 'AbortError' }
+  /** `by`: what cancelled the skill (the preempting interrupt's id, or 'death'), when the caller says. */
+  constructor (readonly why: 'timeout' | 'stalled' | 'cancelled', readonly by?: string) { super(`aborted: ${why}`); this.name = 'AbortError' }
 }
 
 export function failureSignature (cls: FailureClass, skill: string, objective: string | null, dim: string, detailKey = ''): string {
@@ -33,9 +34,9 @@ export class SkillRunner {
 
   has (id: string): boolean { return this.skills.has(id) }
 
-  /** Cancel the running top-level skill (preemption/pause/shutdown). */
-  cancel (): void {
-    this.rootAbort?.abort(new AbortError('cancelled'))
+  /** Cancel the running top-level skill (preemption/pause/shutdown); `by` names the cause. */
+  cancel (by?: string): void {
+    this.rootAbort?.abort(new AbortError('cancelled', by))
   }
 
   async run (id: string, params: unknown, parent?: Parent): Promise<SkillResult> {

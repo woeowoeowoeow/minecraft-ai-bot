@@ -828,3 +828,21 @@ Bar for the formal gate (≥ 4/6, ≤ 1 death/run, no recurring long resource-se
 - no long resource-search timeout.
 
 **Single dominant remaining cause: early drowned death cascades at ocean spawns, caused by this round's wide log targeting.** Log blocks on the sea floor (shipwrecks), not trees, were accepted as wood targets and re-chosen after every flee and respawn. This produced 8 of the 24 deaths and both death_limit runs. Without them the gate would have had 16 deaths (0.80/run). Proposed fix, not built: accept as wood only logs with leaves within a few blocks above them and no water around them; blacklist a wood target whose walk a threat interrupted. Secondary, in order: deaths during the night filler `pre_gold_armor` (4); the Mineflayer `acceptClick` crash (1 infra run). **C must not start.**
+
+### Wood-target hotfix (after round-3 gate 20261004): 2026-10-05 (code uncommitted on c9fd72e, content hash `9af4b66ae04572cb`)
+
+Scope: the underwater-log regression only (round-3 gate r02/r08: 8 drowned deaths, both death_limit runs). Nothing else changed.
+
+**Fix.**
+- `src/observer/trees.ts` `treeVerdict`: a log counts as wood only if its trunk (straight, or one diagonal step per level for acacia) stands on soil, air (foot already dug) or leaves; the log has < 2 water neighbours; ≤ 4 of the 8 cells around the trunk one above its foot are water; no water above the top; ≥ 3 non-persistent leaves within 3 blocks of the top. Applied to `collect` candidates (near and the 160-block wide scan) and to the observer's tree spots.
+- Danger zones: a wood walk or dig cancelled by `flee`, `surface` or death, or with an aquatic hostile within 24 or the head under water, blacklists a 24-block zone around the target for 1800 s (survives death); zone logs and tree spots are skipped. `SkillRunner.cancel(by)` carries the preempting interrupt id. `collect(log)` moves inland (≤ 2 per call) when aquatic hostiles are about and the bot is at the water.
+
+**Tests.** Unit: `tests/unit/wood-targets.test.ts` (8) plus the tree/search/runner/shoreline files, 56/56. Fixtures `tests/scenario/wood-targets.scenario.test.ts` 3/3: a sea-floor wreck and a beached wreck (the old filter accepted 20/20 of their logs) are rejected and the bot walks 91 blocks to the real tree; saplings of all seven 1.16.1 tree forms grown naturally, 124–174 logs, 0 rejected; a flee from a drowned on the way to a tree records the zone and the next collect goes to the other tree.
+
+| run | gate 20261004 | hotfix |
+|---|---|---|
+| replay gate r02 (`20261005-103623-b-wood-hotfix-replay-r01`) | death_limit, 5 deaths (sea-floor log chosen 9×) | **B 2 231 s, 0 deaths**; wooden pickaxe 91 s (was 369 s); no sea-floor target |
+| replay gate r08 (`…-replay-r02`) | death_limit at 173 s, 5 drowned | **B 4 162 s, 1 death** (skeleton in the Nether, during return); wood 538 s: ocean island, a 25× flee chain from one drowned swam ~800 blocks (survival behaviour, unchanged) |
+| fresh dev `20261005-122339-b-wood-hotfix-smoke` | – | 2/3 B (1 367 s, 1 949 s, 0 deaths); r01 timeout, 3 deaths (creeper ×2, zombie bare-handed while sheltering): food hunts exhausted, flint at 3 090 s; wood zones fired 2×, no wood search failure |
+
+Replay + smoke: 4/5 B, 4 deaths (0.80/run), 0 drowned deaths, 0 sea-floor wood targets. Residuals (not wood): flee chains in open water on island spawns; creeper deaths after gear loss.

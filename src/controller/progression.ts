@@ -92,7 +92,7 @@ export class ProgressionController {
     this.recovery = new Recovery(() => this.now())
     this.cooldowns = new Cooldowns(() => d.bus.now())
     d.bus.on(ev => {
-      if (ev.type === 'death') { this.died = true; d.runner.cancel() }
+      if (ev.type === 'death') { this.died = true; d.runner.cancel('death') }
       if (ev.type === 'cover' && !ev.data.step) this.lastCover = { t: ev.t, ok: Boolean(ev.data.ok), method: String(ev.data.method), why: String(ev.data.why) }
     })
   }
@@ -147,7 +147,7 @@ export class ProgressionController {
       this.snapshotAlive()
       if (this.targetReached()) { this.d.runner.cancel(); return }
       const i = this.pickInterrupt(priority)
-      if (i) { preemptedBy = i; this.d.runner.cancel(); return }
+      if (i) { preemptedBy = i; this.d.runner.cancel(i.id); return }
       // A surface objective started by day is stopped at nightfall (schedule.ts); the loop re-plans.
       const o = this.current
       if (priority === P.objective && o && o.skill === skill && this.now() - nightCheck >= NIGHTFALL_CHECK_MS) {

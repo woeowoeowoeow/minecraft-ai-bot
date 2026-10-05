@@ -7,6 +7,7 @@ import { EventBus } from './events.js'
 import type { BodyCell, BodyState, EntityInfo, Hazard, Location, ToolInfo, WorldMemory, WorldState } from './types.js'
 import { ARMOR_POINTS, ENTITY_KIND_GAPS, FISH, FOOD_ANIMALS, METADATA } from '../version.js'
 import { ownAir } from './vitals.js'
+import { naturalTreeFilter } from './trees.js'
 
 /**
  * Base interest set (architecture §8.1), 1.16.1 names; objectives can add more via
@@ -268,7 +269,9 @@ export class Observer {
   scanTrees (): void {
     if (this.dim() !== 'overworld') return
     const ids = logBlockNames(this.bot).map(n => this.bot.registry.blocksByName[n]?.id).filter((x): x is number => x !== undefined)
-    const found = this.bot.findBlocks({ matching: ids, maxDistance: TREES.scanR, count: TREES.perScan }).map(v => [v.x, v.y, v.z] as V3)
+    // Only logs of natural surface trees (round-3 gate r02/r08 remembered a shipwreck on the sea floor).
+    const isTree = naturalTreeFilter(this.bot)
+    const found = this.bot.findBlocks({ matching: ids, maxDistance: TREES.scanR, count: 2 * TREES.perScan }).filter(isTree).slice(0, TREES.perScan).map(v => [v.x, v.y, v.z] as V3)
     const now = this.bus.now()
     for (const c of clusterPoints(found, TREES.cluster)) this.rememberSpot('trees', c.pos, now, TREES.cluster, TREES.maxSpots, { logs: c.n })
     const me = this.bot.entity.position
