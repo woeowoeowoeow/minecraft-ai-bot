@@ -5,6 +5,8 @@
 import { z } from 'zod'
 import type { V3 } from '../../schema/index.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
+import { Relocator } from './search.js'
+import { Vec3 } from 'vec3'
 
 const SURFACE_STEP = 48
 const TUNNEL_STEP = 24
@@ -30,8 +32,12 @@ export class Searcher {
   steps = 0
   private heading: number | null = null
   private lastFailed = false
-  /** `surface`: always walk the surface, never tunnel (food animals live on the surface). */
-  constructor (private readonly label: string, private readonly opts: { surface?: boolean } = {}) {}
+  /**
+   * `surface`: always walk the surface, never tunnel (food animals live on the surface).
+   * `dry`: surface steps strongly prefer land over swimming (food and wood searches: drowned
+   * deaths at shorelines, B gate 20261002 ×4 and dev batch 20261002-225340 ×3).
+   */
+  constructor (private readonly label: string, private readonly opts: { surface?: boolean; dry?: boolean } = {}) {}
 
   /** One search step. Returns whether the step reached its target. */
   async step (ctx: SkillCtx): Promise<boolean> {
@@ -49,7 +55,7 @@ export class Searcher {
     ctx.log('search_step', { n: this.steps, for: this.label, heading: Math.round((this.heading * 180) / Math.PI) % 360, from: me.map(Math.round), target: [tx, under ? Math.floor(me[1]) : 0, tz], mode: under ? 'tunnel' : 'surface' })
     const r = under
       ? await ctx.nav.goto({ kind: 'near', target: [tx, Math.floor(me[1]), tz], range: 2 })
-      : await ctx.nav.goto({ kind: 'xz', target: [tx, 0, tz], range: 4 })
+      : await ctx.nav.goto({ kind: 'xz', target: [tx, 0, tz], range: 4, ...(this.opts.dry ? { dry: true } : {}) })
     if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
     this.lastFailed = !r.ok
     if (r.ok) ctx.progress(`search:${this.label}`, this.steps)
@@ -73,9 +79,21 @@ export async function toSurface (ctx: SkillCtx): Promise<boolean> {
     if (r.ok) return true
     if (r.class === 'CANCELLED') ctx.checkAbort()
   }
-  const r = await ctx.nav.goto({ kind: 'y', target: Math.max(Math.floor(s.pos[1]) + 1, 64) })
+  const r = await ctx.nav.goto({ kind: 'y', target: Math.max(Math.floor(s.pos[1]) + 1, skyY(ctx, s.pos)) })
   if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
   return !ctx.state().body.covered
+}
+
+/** First y with nothing solid above it in the bot's column (loaded blocks, up to 120 above), at least 64. */
+function skyY (ctx: SkillCtx, pos: V3): number {
+  const x = Math.floor(pos[0]); const z = Math.floor(pos[2])
+  let top = 63
+  for (let y = Math.floor(pos[1]) + 2; y <= Math.min(255, Math.floor(pos[1]) + 120); y++) {
+    const b = ctx.bot.blockAt(new Vec3(x, y, z), false)
+    if (!b) break
+    if (b.boundingBox === 'block') top = Math.max(top, y)
+  }
+  return top + 1
 }
 
 const Params = z.object({
@@ -117,7 +135,11 @@ export const explore: SkillDef<P, { steps: number }> = {
   async onCancel (ctx) { ctx.env.nav.stop() },
 }
 
-/** L2 relocation (architecture §7.2): one search step (surface walk or tunnel) into new ground. */
+/**
+ * L2 relocation (architecture §7.2): one step into new ground. On the surface the heading
+ * comes from the loaded-terrain survey (search.ts: land, unexplored chunks); under cover it
+ * is a tunnel step.
+ */
 export const relocate: SkillDef<Record<string, never>, { moved: boolean }> = {
   id: 'relocate',
   level: 'generic',
@@ -126,7 +148,7 @@ export const relocate: SkillDef<Record<string, never>, { moved: boolean }> = {
   timeoutMs: () => 120_000,
   stallMs: 90_000,
   async run (ctx) {
-    const search = new Searcher('relocate')
+    const search = ctx.state().body.covered ? new Searcher('relocate') : new Relocator('relocate', { mark: false, step: 64 })
     for (let i = 0; i < 2; i++) if (await search.step(ctx)) return { moved: true }
     throw new SkillFailure('NAV_UNREACHABLE', 'could not relocate', { key: 'target=relocate' })
   },

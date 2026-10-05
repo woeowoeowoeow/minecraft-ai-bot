@@ -72,6 +72,8 @@ export type GatherSource = {
   tool?: ToolNeed
   /** The drop is a chance (flint from gravel): re-place and re-dig the block item. */
   chance?: boolean
+  /** A chance drop is knapped from this carried block: one is obtained first (its own source). */
+  knapFrom?: string
 }
 export type Source =
   | GatherSource
@@ -90,8 +92,12 @@ export const SOURCES: Record<string, Source> = {
   gold_ore: { kind: 'gather', blocks: ['gold_ore'], skill: 'mine', tool: { tool: 'pickaxe', minTier: 2 } },
   diamond: { kind: 'gather', blocks: ['diamond_ore'], skill: 'mine', tool: { tool: 'pickaxe', minTier: 2 } },
   obsidian: { kind: 'gather', blocks: ['obsidian'], skill: 'mine', tool: { tool: 'pickaxe', minTier: 3 } },
-  flint: { kind: 'gather', blocks: ['gravel'], skill: 'collect', chance: true },
-  gravel: { kind: 'gather', blocks: ['gravel'], skill: 'collect' },
+  // Flint is knapped from one carried gravel block (place, dig, repeat: 10 % per dig), and that
+  // block comes from controlled mining, which never targets gravel whose digging releases water
+  // and reaches buried gravel by excavation. Re-gate 20261003: lake-bed gravel cost 518 s/run,
+  // 18 stalls and 21 unreachable targets, and one run (r05) terminated.
+  flint: { kind: 'gather', blocks: ['gravel'], skill: 'collect', chance: true, knapFrom: 'gravel' },
+  gravel: { kind: 'gather', blocks: ['gravel'], skill: 'mine' },
   sand: { kind: 'gather', blocks: ['sand'], skill: 'collect' },
   dirt: { kind: 'gather', blocks: ['dirt', 'grass_block'], skill: 'collect' },
   raw_meat: { kind: 'hunt', mobs: Object.keys(FOOD_ANIMALS) },
@@ -227,6 +233,7 @@ export function planObtain (item: string, count: number, inv0: Inv, hints: Hints
     switch (src.kind) {
       case 'gather': {
         if (src.tool) ensureTool(src.tool, depth, st)
+        if (src.knapFrom) ensure(src.knapFrom, 1, depth + 1, st)
         const g: Step = { kind: 'gather', item: it, count: countOf(inv, it) + need, blocks: src.blocks, skill: src.skill, chance: src.chance }
         steps.push(g)
         needs.set(g, need)

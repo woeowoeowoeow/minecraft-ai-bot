@@ -20,7 +20,7 @@ import { liveView } from '../../nav/blocks.js'
 import { digReleasesLiquid } from '../../nav/hazards.js'
 import type { Location, WorldState } from '../../observer/types.js'
 import type { V3 } from '../../schema/index.js'
-import { dig, waitFor } from '../acts.js'
+import { dig, equipItem, waitFor } from '../acts.js'
 import { toSurface } from '../generic/explore.js'
 import { AbortError, sleep } from '../runner.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
@@ -438,7 +438,7 @@ export async function lightPortal (ctx: SkillCtx, g: PortalGeom): Promise<boolea
   if (!base || base.name !== 'obsidian') return false
   const it = bot.inventory.items().find(i => i.name === 'flint_and_steel')
   if (!it) throw new SkillFailure('MISSING_RESOURCE', 'no flint and steel', { key: 'item=flint_and_steel' }, [{ item: 'flint_and_steel', count: 1 }])
-  await bot.equip(it, 'hand')
+  await equipItem(bot, 'flint_and_steel', 'hand')
   bot.clearControlStates()
   try { await bot.activateBlock(base, new Vec3(0, 1, 0)) } catch { /* verified below */ }
   return waitFor(() => frameStatus(liveView(bot), g).portal >= 6, 2500, ctx.signal)

@@ -1,6 +1,6 @@
 // Food and equipment choices (pure): what to eat, what to wear.
 import mcData from 'minecraft-data'
-import { ARMOR_POINTS, COOKED_FOODS, UNSAFE_FOODS, GOLDEN_ARMOR } from '../version.js'
+import { ARMOR_POINTS, COOKED_FOODS, SMELTING, UNSAFE_FOODS, GOLDEN_ARMOR } from '../version.js'
 import { MC_VERSION } from '../version.js'
 
 const FOODS = mcData(MC_VERSION).foodsByName
@@ -58,6 +58,14 @@ export function chooseFood (inv: Record<string, number>, food: number, health = 
 export function hasEmergencyFood (inv: Record<string, number>): boolean {
   return chooseFood(inv, EMERGENCY.food, EMERGENCY.health) !== null
 }
+
+/** Raw meat and fish that a furnace turns into cooked food (counts toward nether_ready). */
+export function cookableRaw (inv: Record<string, number>): number {
+  let n = 0
+  for (const [k, v] of Object.entries(inv)) if (v > 0 && RAW_COOKABLE.test(k) && COOKED_FOODS.has(SMELTING[k] ?? '')) n += v
+  return n
+}
+const RAW_COOKABLE = /^(beef|porkchop|mutton|chicken|rabbit|cod|salmon)$/
 
 /** Food items the bot would eat when hungry (cooked, safe raw, other safe foods): the early buffer. */
 export function foodItems (inv: Record<string, number>): number {

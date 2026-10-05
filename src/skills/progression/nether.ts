@@ -8,12 +8,12 @@ import progression from '../../../config/progression.json' with { type: 'json' }
 import { liveView } from '../../nav/blocks.js'
 import type { Location, WorldState } from '../../observer/types.js'
 import type { V3 } from '../../schema/index.js'
-import { waitFor } from '../acts.js'
+import { equipItem, waitFor } from '../acts.js'
 import { toSurface } from '../generic/explore.js'
 import { sleep } from '../runner.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
 import { rememberLoc, settle } from './buckets.js'
-import { arrivalHazards, excursionTargets, safeStand, tunnelTarget } from './nether-plan.js'
+import { arrivalHazards, excursionTargets, safeStand, tunnelTargets } from './nether-plan.js'
 import { builtLit, lightPortal } from './portal.js'
 import { frameStatus, geomFrom } from './portal-plan.js'
 
@@ -52,7 +52,7 @@ async function relight (ctx: SkillCtx, loc: Location): Promise<boolean> {
   const it = ctx.bot.inventory.items().find(i => i.name === 'flint_and_steel')
   if (!it) return false
   for (const p of cands.slice(0, 6)) {
-    await ctx.bot.equip(it, 'hand')
+    await equipItem(ctx.bot, it.name, 'hand')
     try { await ctx.bot.activateBlock(ctx.bot.blockAt(p, false)!, new Vec3(0, 1, 0)) } catch { /* checked below */ }
     if (await waitFor(() => portalBlocks(ctx, loc.pos).length > 0, 1500, ctx.signal)) return true
   }
@@ -219,14 +219,15 @@ export const netherExcursion: SkillDef<ExcP, { dist: number; via: string }> = {
         if (best >= p.minDist) return record('walk')
         ctx.log('nether', { kind: 'excursion_leg', ok: r.ok, class: r.ok ? null : r.class, target: t, best: Math.round(best) })
       }
-      const tt = tunnelTarget(liveView(ctx.bot), [Math.floor(origin[0]), Math.floor(origin[1]), Math.floor(origin[2])], p.minDist + 2)
-      if (tt) {
+      const tunnels = tunnelTargets(liveView(ctx.bot), [Math.floor(origin[0]), Math.floor(origin[1]), Math.floor(origin[2])], p.minDist + 2)
+      for (const tt of tunnels) {
+        ctx.checkAbort()
         const r = await ctx.nav.goto({ kind: 'near', target: tt, range: 1, mode: 'excavate' }, { profile: 'nether' })
         if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
         if (best >= p.minDist) return record('tunnel')
         ctx.log('nether', { kind: 'excursion_leg', ok: r.ok, class: r.ok ? null : r.class, target: tt, best: Math.round(best), tunnel: true })
       }
-      throw new SkillFailure('NAV_HAZARD', `no safe way ${p.minDist} blocks from the portal (best ${Math.round(best)})`, { key: 'step=excursion', targets: targets.length, tunnel: tt !== null })
+      throw new SkillFailure('NAV_HAZARD', `no safe way ${p.minDist} blocks from the portal (best ${Math.round(best)})`, { key: 'step=excursion', targets: targets.length, tunnel: tunnels.length > 0 })
     } finally {
       clearInterval(track)
     }

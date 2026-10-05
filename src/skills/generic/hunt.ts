@@ -9,7 +9,8 @@ import { sleep } from '../runner.js'
 import { countOf } from '../sources.js'
 import { armUp } from '../survival/combat.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
-import { Searcher, toSurface } from './explore.js'
+import { toSurface } from './explore.js'
+import { Relocator, SEARCH } from './search.js'
 import { FISH, METADATA } from '../../version.js'
 import { liveView, type BlockView } from '../../nav/blocks.js'
 import { AQUATIC, aquaticThreats, atWater, inlandPoint, isAquatic, waterWithin } from '../survival/aquatic.js'
@@ -28,12 +29,16 @@ type P = z.infer<typeof Params>
 const MAX_CHASE_MS = 30_000
 /** Search steps a hunt may use however wide the strategy (gate 20260929: 12 % hunt success, long exposure). */
 export const HUNT_MAX_STEPS = 6
-/** Remembered animal spots worth walking back to. */
-export const ANIMAL_SPOT = { maxAgeS: 600, maxDist: 160, minDist: 12, forgetS: 300 } as const
+/**
+ * Remembered animal spots worth walking back to. Animals are remembered as far as the server
+ * tracks them (observer: 144 blocks), and 1.16.1 animals do not despawn, so a sighting stays
+ * useful for a while (B round 3: 20 min, 256 blocks, up to 4 per hunt).
+ */
+export const ANIMAL_SPOT = { maxAgeS: 1200, maxDist: 256, minDist: 12, forgetS: 300, perHunt: 4 } as const
 /** Search steps spent by hunts in this window and area count against the next hunt (preemption resumes the budget). */
 const BUDGET_WINDOW_S = 600
-/** A hunt this far from where its budget started searches a new area with a fresh budget (dev batch 8 r04). */
-const BUDGET_AREA = 96
+/** A hunt this far from where its budget started searches a new area with a fresh budget (dev batch 8 r04). Two relocation steps. */
+const BUDGET_AREA = 2 * SEARCH.step
 
 /** Hunt search steps spent recently in this area, per bot memory: a preempted hunt resumes its budget instead of starting over. */
 const budgets = new WeakMap<object, { steps: number; since: number; at: V3 }>()
@@ -120,12 +125,14 @@ export const hunt: SkillDef<P, { kills: number; searchSteps: number }> = {
   params: Params,
   isSatisfied: (s, p) => countOf(s.inventory, p.item) >= p.count,
   preconditions: () => ({ ok: true }),
-  timeoutMs: (s, p) => Math.min(6 * 60_000, 60_000 + 25_000 * Math.max(1, p.count - countOf(s.inventory, p.item)) + 45_000 * Math.min(p.searchSteps, HUNT_MAX_STEPS) + 60_000),
+  timeoutMs: (s, p) => Math.min(8 * 60_000, 60_000 + 25_000 * Math.max(1, p.count - countOf(s.inventory, p.item)) + 60_000 * Math.min(p.searchSteps, HUNT_MAX_STEPS) + 60_000),
   stallMs: 90_000,
   async run (ctx, p) {
     const bot = ctx.bot
     const have = () => countOf(ctx.state().inventory, p.item)
-    const search = new Searcher(p.mobs[0]!, { surface: true })
+    // Animals live on the surface: decisive relocation into new grassland, avoiding areas already
+    // hunted out (search.ts). The old 48-block outward steps re-hunted the same ground.
+    const search = new Relocator('animals')
     const maxSteps = Math.min(p.searchSteps, HUNT_MAX_STEPS)
     const spent = budget(ctx)
     let kills = 0
@@ -133,7 +140,10 @@ export const hunt: SkillDef<P, { kills: number; searchSteps: number }> = {
     let fishFails = 0
     let spots = 0
     let relocations = 0
-    if (!(await toSurface(ctx))) ctx.localRecovery('could not reach the surface')
+    // Animals live on the surface. A bot still under cover would walk to remembered spots through
+    // caves (b3-smoke1 r01: from y 29 under a mountain toward spots 52–103 blocks off, into lava at
+    // y 10): fail instead, and Recovery retries and then relocates.
+    if (!(await toSurface(ctx))) throw new SkillFailure('NAV_STUCK', 'could not reach the surface to hunt', { key: 'target=surface' })
     const rejected = (e: Entity, why: string) => {
       ctx.env.blacklist(`mob:${e.id}`, 'shoreline_risk', 60)
       ctx.log('food_risk', { kind: 'rejected', why, target: e.name, pos: [e.position.x, e.position.y, e.position.z].map(Math.round), aquatic: aquaticThreats(ctx.state()).length })
@@ -158,7 +168,7 @@ export const hunt: SkillDef<P, { kills: number; searchSteps: number }> = {
       if (!target) {
         if (p.searchSteps === 0) throw new SkillFailure('NOT_FOUND', `no ${p.mobs.join('/')} within ${p.maxDist}`, { key: `target=${p.item}` })
         // Ordered, bounded: remembered animal spots first, then a few search steps.
-        const spot = spots < 3 ? animalSpot(ctx.state(), k => ctx.env.isBlacklisted(k)) : null
+        const spot = spots < ANIMAL_SPOT.perHunt ? animalSpot(ctx.state(), k => ctx.env.isBlacklisted(k)) : null
         if (spot && shore && waterWithin(shore, spot, AQUATIC.shore)) {
           ctx.env.blacklist(`animals:${spot[0]},${spot[2]}`, 'shoreline_risk', ANIMAL_SPOT.forgetS)
           ctx.log('food_risk', { kind: 'rejected', why: 'shoreline_spot', target: 'animal_spot', pos: spot, aquatic: aquaticThreats(ctx.state()).length })
@@ -167,15 +177,19 @@ export const hunt: SkillDef<P, { kills: number; searchSteps: number }> = {
         if (spot) {
           spots++
           ctx.env.blacklist(`animals:${spot[0]},${spot[2]}`, 'visited', ANIMAL_SPOT.forgetS)
-          ctx.log('search_step', { skill: 'hunt', n: 0, for: p.item, from: ctx.state().pos.map(Math.round), target: spot, mode: 'animal_spot' })
-          const r = await ctx.nav.goto({ kind: 'near', target: spot, range: 6 }, { timeoutMs: 45_000 })
+          const from = ctx.state().pos
+          const dist = Math.hypot(spot[0] - from[0], spot[2] - from[2])
+          ctx.log('search_step', { skill: 'hunt', n: 0, for: p.item, from: from.map(Math.round), target: spot, mode: 'animal_spot', dist: Math.round(dist) })
+          const r = await ctx.nav.goto({ kind: 'near', target: spot, range: 6, dry: true }, { timeoutMs: Math.min(120_000, 20_000 + 400 * dist) })
           if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
           if (r.ok) ctx.progress('spot', spots)
           continue
         }
         if (spent.steps >= maxSteps) throw new SkillFailure('SEARCH_EXHAUSTED', `no ${p.mobs.join('/')} within ${p.maxDist} after ${spent.steps} search steps`, { key: `target=${p.item}` })
+        if (await search.settle(ctx)) continue
         spent.steps++
         await search.step(ctx)
+        spots = 0 // a new area: remembered spots may be visited again
         continue
       }
       const weapon = await armUp(bot)

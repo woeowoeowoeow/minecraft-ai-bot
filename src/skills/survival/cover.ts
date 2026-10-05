@@ -14,7 +14,7 @@ import { MOB_THREATS } from '../../version.js'
 import { dig, equipItem, withTimeout } from '../acts.js'
 import { sleep } from '../runner.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
-import { assessThreat, RANGED_MELEE_DIST } from './threat.js'
+import { assessThreat, RANGED_MELEE_DIST, weakState } from './threat.js'
 
 /** Mob eye height used for sight lines (skeleton 1.74, pillager and drowned 1.62). */
 const SHOOTER_EYE = 1.62
@@ -247,7 +247,21 @@ export const cover: SkillDef<P, { method: CoverMethod; waitedMs: number }> = {
         if (s.body.enclosed) { if (method === 'none') method = 'enclosed'; report(true, 'enclosed'); return { method, waitedMs: Date.now() - t0 } }
         const sh = shooters(s)
         const seen = sh.filter(e => e.los !== false)
-        if (!sh.length) { if (method === 'none') method = 'hidden'; report(true, 'no shooter in range'); return { method, waitedMs: Date.now() - t0 } }
+        if (!sh.length) {
+          // Melee pressure on a weak bot (threat.ts `weak: dig in`): seal a pocket instead of running.
+          const th = assessThreat(s)
+          if (!dug && s.inLiquid === 'none' && weakState(s) && th.mobs.some(m => !m.ranged && m.e.dist <= 10)) {
+            dug = true
+            const r = await digIn(ctx, 1)
+            ctx.log('cover', { ok: r.ok, method: 'dig_in', why: r.reason, capped: r.capped, step: true, vs: 'melee' })
+            if (r.ok) { method = 'dig_in'; continue }
+            report(false, `melee: ${r.reason}`)
+            throw new SkillFailure('COMBAT_DANGER', `no dig-in from melee: ${r.reason}`, { key: `target=${th.primary?.e.name ?? '?'}` })
+          }
+          if (method === 'none') method = 'hidden'
+          report(true, 'no shooter in range')
+          return { method, waitedMs: Date.now() - t0 }
+        }
         // A shooter that came into melee range is fought by `defend` (the interrupt re-evaluates).
         if (seen.length && seen.every(e => e.dist <= RANGED_MELEE_DIST) && assessThreat(s).action === 'defend') { report(true, 'shooter in melee range'); return { method, waitedMs: Date.now() - t0 } }
         if (!seen.length) {

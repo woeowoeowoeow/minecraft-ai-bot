@@ -28,6 +28,19 @@ export const RETREAT_HP = 6
 export const RANGED_MELEE_DIST = 4
 /** A creeper in sight this close is never fought: the bot keeps its distance (swell starts at 3, stops beyond 7). */
 export const CREEPER_SPACING = 6
+/**
+ * A weak bot (no real weapon, or badly hurt) with melee mobs no closer than this digs in
+ * instead of running: a 3-deep capped pocket takes about 2.5 s bare-handed in dirt, and a
+ * zombie covers ~2.3 blocks a second. Closer than this the bot flees, then digs in once
+ * clear (combat.ts). B gate 20261002: 11 of 22 deaths were mid-flee, 15 at 0 armor.
+ */
+export const DIG_IN_MIN_DIST = 6
+
+/** No real weapon, or at the retreat threshold: fights are lost, and long open flights too. */
+export function weakState (s: WorldState, cap = capacity(s)): boolean {
+  return cap < UNARMED_CAPACITY || s.vitals.health <= RETREAT_HP
+}
+
 /** Melee mobs start to count within this distance (they path to the bot from further away). */
 const MELEE_ALERT = 10
 /** The interrupt fires when the nearest scoring mob is this close (melee), or in its range (ranged). */
@@ -135,5 +148,12 @@ export function assessThreat (s: WorldState): ThreatAssessment {
     action = melee ? 'defend' : 'cover'
     reason = `threat ${score} ≤ capacity ${cap}${explosive ? ' (explosive ×1.6)' : ''}${melee ? '' : ', ranged at range'}`
   } else { action = shooting ? 'cover' : 'flee'; reason = `threat ${score} > capacity ${cap}${explosive ? ' (explosive ×1.6)' : ''}` }
+  // Weak, on land, only melee mobs and none of them close yet: dig in rather than run (cover's
+  // melee path seals a pocket; if no column is diggable cover fails and its cooldown turns it into
+  // flee). Aquatic mobs keep the inland flight of the shoreline fix (A round 3).
+  if (action === 'flee' && weakState(s, cap) && s.inLiquid === 'none' && s.body.feet !== 'water' && !mobs.some(m => m.ranged || isAquatic(m.e.name))) {
+    const near = mobs.filter(m => m.e.los !== false || m.e.dist <= 3)
+    if (near.length && Math.min(...near.map(m => m.e.dist)) >= DIG_IN_MIN_DIST) { action = 'cover'; reason += '; weak: dig in' }
+  }
   return { score, capacity: cap, mobs, primary, engage, action, reason }
 }

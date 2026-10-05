@@ -5,14 +5,14 @@
 // with `reasoner=none` the gate (§5.4) is never reached in milestone A.
 import type { EventBus } from '../observer/events.js'
 import type { WorldState } from '../observer/types.js'
-import { candidateObjectives, nextObjective, type RequirementDef } from '../planner/policy.js'
-import { recoverDecision, type DeathRecord } from '../recovery/death.js'
+import { candidateObjectives, fillerObjectives, nextObjective, type RequirementDef } from '../planner/policy.js'
+import { recoverDecision, type DeathRecord, type DeathSite } from '../recovery/death.js'
 import { Recovery, type RecoveryAction } from '../recovery/ladder.js'
 import type { Failure, FailureClass, Objective, Outcome, SkillResult } from '../schema/index.js'
 import type { SkillRunner } from '../skills/runner.js'
 import { failureSignature } from '../skills/runner.js'
 import type { Telemetry } from '../telemetry/telemetry.js'
-import { bestWeapon } from '../skills/survival/threat.js'
+import { bestWeapon, capacity } from '../skills/survival/threat.js'
 import { Cooldowns, P, selectInterrupt, type Interrupt, type Priority } from './interrupts.js'
 import { deferAtNight, schedule, surfaceNight } from './schedule.js'
 
@@ -45,7 +45,7 @@ export type ProgressionResult = {
 export const LIMITS = { deaths: 5 }
 
 /** Cooldown (s) after an interrupt skill fails, per interrupt kind. */
-const INTERRUPT_COOLDOWN: Record<string, number> = { rest: 20, shelter: 60, hold: 10, defend: 20, flee: 15, cover: 10, forage: 120, pickup: 120, eat: 20, equip: 60, inventory: 90, surface: 2, suffocation: 2, escape_lava: 0, escape_fire: 0 }
+const INTERRUPT_COOLDOWN: Record<string, number> = { rest: 20, shelter: 60, hold: 10, defend: 20, flee: 15, cover: 10, forage: 120, pickup: 120, eat: 20, cook: 90, extinguish: 3, equip: 60, inventory: 90, surface: 2, suffocation: 2, escape_lava: 0, escape_fire: 0 }
 /** Interrupts whose cooldown is per target entity. */
 const PER_TARGET = new Set(['defend', 'flee', 'cover', 'forage'])
 /** An objective iteration shorter than this is followed by a pause (never a synchronous spin). */
@@ -53,6 +53,13 @@ const MIN_ITERATION_MS = 250
 const MIN_INTERRUPT_MS = 50
 /** Seconds between holds in a sealed pocket. */
 const HOLD_GAP_S = 30
+/**
+ * A weak bot (no weapon, or badly hurt) holds again almost at once while hostiles stay near,
+ * for up to WEAK_HOLD_MAX_S in a row (then the normal gap, never pinned for good). Dev batch
+ * 20261002-225340 r06: dug out of its pocket next to the skeleton it had hidden from, at 16 HP,
+ * and died 26 s later.
+ */
+const WEAK_HOLD = { gapS: 0, maxS: 240, newChainAfterS: 60 } as const
 /** Identical failures (same signature) within this window back off and share one bundle. */
 const REPEAT = { windowS: 30, maxBackoffMs: 30_000 }
 /** How often a running surface objective is checked against nightfall (ms). */
@@ -74,7 +81,12 @@ export class ProgressionController {
   private current: Objective | null = null
   /** Last state while alive (equipment is gone by the time the death event arrives). */
   private alive: Record<string, unknown> | null = null
+  /** The death site as last seen alive (recovery decision): cover and hostiles within 16. */
+  private site: DeathSite | null = null
   private lastCover: { t: number; ok: boolean; method: string; why: string } | null = null
+  /** Start and last end of the current chain of weak holds (bus seconds). */
+  private weakHoldSince: number | null = null
+  private weakHoldLast = -Infinity
 
   constructor (private readonly d: ProgressionDeps) {
     this.recovery = new Recovery(() => this.now())
@@ -141,7 +153,7 @@ export class ProgressionController {
       if (priority === P.objective && o && o.skill === skill && this.now() - nightCheck >= NIGHTFALL_CHECK_MS) {
         nightCheck = this.now()
         const st = this.d.state()
-        if (surfaceNight(st) && deferAtNight(o, st) && schedule(candidateObjectives(this.d.requirements, st, id => this.recovery.isSuspended(id)), st).objective?.id !== o.id) {
+        if (surfaceNight(st) && deferAtNight(o, st) && this.schedule(st).objective?.id !== o.id) {
           preemptedBy = { id: 'nightfall', priority: P.maintenance, skill: 'schedule', params: {}, reason: `${o.id} is surface work` }
           this.d.bus.emit('schedule', { mode: 'nightfall', stopped: o.id, timeOfDay: st.vitals.timeOfDay })
           this.d.runner.cancel()
@@ -168,6 +180,7 @@ export class ProgressionController {
       stack: s.control.skillStack.map(x => x.skill), timeOfDay: s.vitals.timeOfDay,
       hostile: s.nearby.entities.filter(e => e.kind === 'hostile').slice(0, 6).map(e => `${e.name}@${Math.round(e.dist)}${e.los === false ? '(no los)' : ''}`),
     }
+    this.site = { covered: s.body.covered, hostiles: s.nearby.entities.filter(e => e.kind === 'hostile' && e.dist <= 16).map(e => ({ name: e.name, dist: Math.round(e.dist) })) }
   }
 
   private async runInterrupt (i: Interrupt): Promise<void> {
@@ -187,12 +200,20 @@ export class ProgressionController {
     s.control.interrupt = null
     this.d.bus.emit('interrupt_end', { id: i.id, status: res.status, failure: res.failure?.class ?? null, reason: res.failure?.reason ?? null }, res.status === 'success' ? 'info' : 'warn')
     if (res.status === 'success' && i.id === 'eat') this.cooldowns.set('eat', 3) // the food level update trails the eat
+    if (res.status === 'success' && i.id === 'cook') this.cooldowns.set('cook', 30)
     if (res.status === 'success' && i.id === 'shelter') this.cooldowns.set('shelter', 45)
     if (res.status === 'success' && i.id === 'rest') this.cooldowns.set('rest', 5)
     if (res.status === 'success' && i.id === 'inventory') this.cooldowns.set('inventory', 20)
     if (i.id === 'forage' && res.status !== 'cancelled') this.cooldowns.set('forage', 20)
     // A hold always ends with a turn for the objective (never pinned by a mob that stays near).
-    if (i.id === 'hold' && res.status !== 'cancelled') this.cooldowns.set('hold', HOLD_GAP_S)
+    if (i.id === 'hold' && res.status !== 'cancelled') {
+      const weak = i.params.weak === true
+      const now = this.d.bus.now()
+      if (now - this.weakHoldLast > WEAK_HOLD.newChainAfterS) this.weakHoldSince = null
+      if (weak) { this.weakHoldSince ??= now; this.weakHoldLast = now }
+      const chained = weak && now - this.weakHoldSince! < WEAK_HOLD.maxS
+      this.cooldowns.set('hold', chained ? WEAK_HOLD.gapS : HOLD_GAP_S)
+    }
     if (res.status !== 'success' && res.status !== 'cancelled') {
       const key = PER_TARGET.has(i.id) ? `${i.id}:${String(i.params.targetId)}` : i.id === 'pickup' ? `pickup:${String(i.params.entityId)}` : i.id
       const cd = INTERRUPT_COOLDOWN[i.id] ?? 10
@@ -230,7 +251,7 @@ export class ProgressionController {
     const now = this.d.state()
     this.d.bus.emit('recovery_step', { level: 'death', action: 'reset', inventory: now.inventory, deaths: now.counters.deaths })
     if (death) {
-      const dec = recoverDecision(death, now.memory.deaths as DeathRecord[], now.t, now.pos, now.dim)
+      const dec = recoverDecision(death, now.memory.deaths as DeathRecord[], now.t, now.pos, now.dim, this.site ?? undefined, surfaceNight(now))
       this.d.bus.emit('recovery_step', { level: 'death', action: dec.recover ? 'recover_items' : 'skip_recovery', reason: dec.reason })
       if (dec.recover && now.counters.deaths < LIMITS.deaths) {
         // Maintenance priority: the drop-pickup interrupt (P2) must not cancel the recovery walk.
@@ -238,6 +259,10 @@ export class ProgressionController {
         this.d.bus.emit('recovery_step', { level: 'death', action: 'recover_items_end', status: res.status, reason: res.failure?.reason ?? null })
       }
     }
+    // What the bot does next from its real inventory (death-cascade tracking, survival report).
+    const after = this.d.state()
+    const sch = this.schedule(after)
+    this.d.bus.emit('respawn_plan', { deaths: after.counters.deaths, objective: sch.objective?.id ?? null, shelter: sch.shelter, weapon: bestWeapon(after.inventory) ?? 'hand', capacity: capacity(after), night: surfaceNight(after), items: Object.keys(after.inventory).length })
   }
 
   private async act (a: RecoveryAction, obj: Objective): Promise<void> {
@@ -266,6 +291,13 @@ export class ProgressionController {
       return
     }
     await this.runPreemptible('relocate', {}, P.objective)
+  }
+
+  /** Day/night choice among the offerable objectives, with the night fillers (schedule.ts). */
+  private schedule (s: WorldState): ReturnType<typeof schedule> {
+    const suspended = (id: string) => this.recovery.isSuspended(id)
+    const cands = candidateObjectives(this.d.requirements, s, suspended)
+    return schedule(cands, s, surfaceNight(s) ? fillerObjectives(this.d.requirements, s, suspended) : [])
   }
 
   /**
@@ -306,12 +338,11 @@ export class ProgressionController {
         const intr = this.pickInterrupt(P.objective)
         if (intr) { const t0 = this.now(); await this.runInterrupt(intr); await this.pace(t0, MIN_INTERRUPT_MS); continue }
 
-        const cands = candidateObjectives(this.d.requirements, s, id => this.recovery.isSuspended(id))
-        const sch = schedule(cands, s)
+        const sch = this.schedule(s)
         const schedKey = sch.shelter ? `shelter:${sch.deferred.join(',')}` : sch.deferred.length ? `defer:${sch.deferred.join(',')}>${sch.objective?.id}` : ''
         if (schedKey !== this.lastSchedule) {
           this.lastSchedule = schedKey
-          if (schedKey) bus.emit('schedule', { mode: sch.shelter ? 'night_shelter' : 'night_defer', deferred: sch.deferred, chosen: sch.objective?.id ?? null, timeOfDay: s.vitals.timeOfDay })
+          if (schedKey) bus.emit('schedule', { mode: sch.shelter ? 'night_shelter' : sch.filler ? 'night_filler' : 'night_defer', deferred: sch.deferred, chosen: sch.objective?.id ?? null, timeOfDay: s.vitals.timeOfDay })
         }
         if (sch.shelter) {
           // Night, weak, and only surface work left: dig in and wait for day (P1/P2 still preempt).

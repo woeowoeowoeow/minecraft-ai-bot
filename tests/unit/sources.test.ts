@@ -87,8 +87,14 @@ describe('planObtain', () => {
     expect(steps[1]).toMatchObject({ count: 10, input: 'raw_meat' })
   })
 
-  it('flint is a chance drop from gravel', () => {
-    expect(planObtain('flint', 1, {}).steps[0]).toMatchObject({ kind: 'gather', item: 'flint', blocks: ['gravel'], chance: true })
+  it('flint is a chance drop knapped from one mined gravel block', () => {
+    // B round 3: the gravel block comes from controlled mining (never lake-bed gravel from the water).
+    expect(planObtain('flint', 1, {}).steps.slice(0, 2)).toMatchObject([
+      { kind: 'gather', item: 'gravel', count: 1, blocks: ['gravel'], skill: 'mine' },
+      { kind: 'gather', item: 'flint', blocks: ['gravel'], skill: 'collect', chance: true },
+    ])
+    // Carried gravel (picked up while mining) is knapped at once.
+    expect(planObtain('flint', 1, { gravel: 2 }).steps).toMatchObject([{ kind: 'gather', item: 'flint', chance: true }])
   })
 
   it('fails cleanly for unknown sources and never recurses forever', () => {

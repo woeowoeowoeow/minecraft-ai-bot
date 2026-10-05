@@ -15,7 +15,7 @@ import type { SkillRunner } from './runner.js'
 import { defend, flee } from './survival/combat.js'
 import { cover } from './survival/cover.js'
 import { eat, equipGear, holdSafe, manageInventory, pickupDrops, rest, shelter } from './survival/maintenance.js'
-import { escapeLava, escapeSuffocation, surfaceForAir } from './survival/reflexes.js'
+import { escapeLava, escapeSuffocation, extinguish, surfaceForAir } from './survival/reflexes.js'
 
 /** M0 skill set. */
 export function registerM0Skills (runner: SkillRunner): SkillRunner {
@@ -25,7 +25,7 @@ export function registerM0Skills (runner: SkillRunner): SkillRunner {
 /** Milestone A: generic acquisition (architecture §6.1) plus the survival skills behind P0–P2. */
 export function registerASkills (runner: SkillRunner): SkillRunner {
   registerM0Skills(runner)
-  for (const s of [explore, relocate, mine, smelt, hunt, fillBucket, obtain, recoverItems, findLavaPool, escapeLava, surfaceForAir, escapeSuffocation, defend, flee, cover, eat, equipGear, manageInventory, pickupDrops, holdSafe, shelter, rest]) runner.register(s)
+  for (const s of [explore, relocate, mine, smelt, hunt, fillBucket, obtain, recoverItems, findLavaPool, escapeLava, extinguish, surfaceForAir, escapeSuffocation, defend, flee, cover, eat, equipGear, manageInventory, pickupDrops, holdSafe, shelter, rest]) runner.register(s)
   return runner
 }
 

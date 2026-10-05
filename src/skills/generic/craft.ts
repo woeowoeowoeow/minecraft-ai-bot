@@ -1,9 +1,9 @@
-import { once } from 'node:events'
 import { createRequire } from 'node:module'
 import type { Bot } from 'mineflayer'
 import type { Block } from 'prismarine-block'
 import { z } from 'zod'
 import type { Requirement, V3 } from '../../schema/index.js'
+import { resyncInventory } from '../../bot/inventory-sync.js'
 import { countOf } from '../sources.js'
 import { placeNear, waitFor, withTimeout } from '../acts.js'
 import { SkillFailure, type Precondition, type SkillCtx, type SkillDef } from '../types.js'
@@ -117,34 +117,8 @@ function check (bot: Bot, p: P): Precondition {
   return { ok: true }
 }
 
-/** Click action id for resync probes: negative, so it never collides with Mineflayer's own (positive) ids. */
-const RESYNC_ACTION = -7
-
-/**
- * Ask the server for the authoritative inventory contents. Mineflayer's 2×2
- * craft never confirms its last click (it only syncs table windows), so the
- * client model can drift; architecture §7.2 requires a resync before trusting it.
- *
- * 1.16.1 (pre-`stateId` protocol): Mineflayer's `_syncWindow` is a no-op there,
- * so we use the vanilla mechanism instead. A click outside the window with an
- * empty cursor changes nothing on the server; claiming it produced an item makes
- * the server reject it, and a rejected click makes the server resend the whole
- * inventory (`window_items`). Mineflayer answers the rejection with the
- * acknowledgement that re-enables syncing. Returns false (no resync) when the
- * cursor holds an item, because a click outside the window would drop it.
- */
-export async function resyncInventory (bot: Bot): Promise<boolean> {
-  const b = bot as Bot & { _syncWindow?: (w: unknown) => Promise<void>; _client: { write (name: string, data: unknown): void } }
-  if (bot.supportFeature('stateIdUsed')) {
-    if (!b._syncWindow) return false
-    try { await withTimeout(b._syncWindow(bot.inventory), 3000, 'inventory sync'); return true } catch { return false }
-  }
-  if (!bot.supportFeature('actionIdUsed') || bot.inventory.selectedItem) return false
-  const synced = once(bot, 'setWindowItems:0')
-  const claimed = bot.registry.itemsByName.stone!.id
-  b._client.write('window_click', { windowId: 0, slot: -999, mouseButton: 0, action: RESYNC_ACTION, mode: 0, item: { present: true, itemId: claimed, itemCount: 1 } })
-  try { await withTimeout(synced, 3000, 'inventory sync'); return true } catch { return false }
-}
+// Moved to src/bot/inventory-sync.ts (shared with equips); re-exported for existing callers.
+export { resyncInventory }
 
 function snapshotCounts (bot: Bot): Record<string, number> {
   const inv: Record<string, number> = {}

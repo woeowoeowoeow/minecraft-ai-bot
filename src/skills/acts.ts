@@ -3,6 +3,7 @@ import type { Bot } from 'mineflayer'
 import type { Block } from 'prismarine-block'
 import type { Item } from 'prismarine-item'
 import { Vec3 } from 'vec3'
+import { isRejection, isUnanswered, safeEquip } from '../bot/inventory-sync.js'
 import { equipFor } from '../nav/tools.js'
 import { sleep } from './runner.js'
 import { SkillFailure } from './types.js'
@@ -16,6 +17,19 @@ export function withTimeout<T> (p: Promise<T>, ms: number, what: string): Promis
 
 export { bestTool, equipFor } from '../nav/tools.js'
 
+/**
+ * Longest single dig a skill waits for. Mineflayer only sends "finish digging" after its
+ * own predicted break time, so a pathological prediction (Mining Fatigue III makes a log
+ * take ~1000 s bare-handed) used to hold a skill until its stall watchdog fired.
+ */
+export const DIG_MAX_MS = 20_000
+
+/** Mining Fatigue on the client (an elder guardian nearby, or a stale effect). */
+export function miningFatigue (bot: Bot): boolean {
+  const id = bot.registry.effectsByName?.MiningFatigue?.id
+  return id !== undefined && Boolean((bot.entity?.effects as unknown as Record<string, unknown> | undefined)?.[id])
+}
+
 export async function dig (bot: Bot, block: Block, signal: AbortSignal): Promise<void> {
   const tool = await equipFor(bot, block)
   // Digging while airborne is 5× slower (vanilla rule): settle first, e.g. at the end of a path.
@@ -23,6 +37,10 @@ export async function dig (bot: Bot, block: Block, signal: AbortSignal): Promise
   await waitFor(() => bot.entity.onGround, 1500, signal)
   const inWater = Boolean((bot.entity as { isInWater?: boolean }).isInWater)
   const expected = block.digTime(tool?.type ?? null, false, inWater, !bot.entity.onGround, [], bot.entity.effects as never)
+  if (!(expected <= DIG_MAX_MS)) {
+    const fatigue = miningFatigue(bot)
+    throw new SkillFailure('PRECONDITION_FAILED', `digging ${block.name} would take ${Math.round(expected / 1000)} s${fatigue ? ' (mining fatigue)' : ''}`, { key: fatigue ? 'effect=mining_fatigue' : `dig=slow,block=${block.name}` })
+  }
   const onAbort = () => { try { bot.stopDigging() } catch { /* ignore */ } }
   signal.addEventListener('abort', onAbort, { once: true })
   try {
@@ -39,11 +57,19 @@ export function findItem (bot: Bot, name: string): Item | null {
   return bot.inventory.items().find(i => i.name === name) ?? null
 }
 
+/**
+ * Equip through the serialized, rejection-tolerant path (bot/inventory-sync.ts). A click
+ * the server still rejects after the bounded retries is a client/server inventory
+ * mismatch: STATE_INCONSISTENT (Recovery resyncs), never an uncaught INFRA error.
+ */
 export async function equipItem (bot: Bot, name: string, dest: 'hand' | 'off-hand' | 'head' | 'torso' | 'legs' | 'feet' = 'hand'): Promise<Item> {
-  const it = findItem(bot, name)
-  if (!it) throw new Error(`no ${name} in inventory`)
-  await withTimeout(bot.equip(it, dest), 3000, `equip ${name}`)
-  return it
+  if (!findItem(bot, name) && !(dest === 'off-hand' && bot.inventory.slots[45]?.name === name)) throw new Error(`no ${name} in inventory`)
+  try {
+    return await safeEquip(bot, name, dest)
+  } catch (e) {
+    if (isRejection(e) || isUnanswered(e)) throw new SkillFailure('STATE_INCONSISTENT', `equip ${name}: ${(e as Error).message}`, { key: 'inventory=rejected' })
+    throw e
+  }
 }
 
 const FACES: [number, number, number][] = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]

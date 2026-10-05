@@ -2,12 +2,13 @@
 // maintenance > P3 objective. Pure selection over WorldState; the controller
 // preempts the active skill when a strictly higher-priority interrupt appears.
 import type { WorldState } from '../observer/types.js'
-import { chooseFood, armorUpgrades, foodPoints, wantsShield } from '../skills/food.js'
+import { chooseFood, armorUpgrades, cookableRaw, EMERGENCY, foodPoints, wantsShield } from '../skills/food.js'
 import { isUsefulDrop, surplus } from '../skills/inventory.js'
-import { assessThreat, capacity, isNight, RETREAT_HP } from '../skills/survival/threat.js'
+import { assessThreat, capacity, isNight, RETREAT_HP, weakState } from '../skills/survival/threat.js'
 import { AQUATIC, aquaticThreats, isAquatic, waterCellsNear } from '../skills/survival/aquatic.js'
-import { countOf } from '../skills/sources.js'
+import { countOf, GROUPS, planObtain } from '../skills/sources.js'
 import { cookedCount } from '../skills/food.js'
+import { hintsFrom } from '../skills/generic/obtain.js'
 import { FISH, FOOD_ANIMALS, MOB_THREATS } from '../version.js'
 
 export type Priority = 0 | 1 | 2 | 3
@@ -37,6 +38,10 @@ export const EAT_FOOD = 14
 export const SHELTER_BELOW = 1.2
 /** Inside a sealed dig-in the bot stays while a hostile is this close (dev batch 8: 16 pinned bots for 30 min on mobs in nearby caves). */
 export const HOLD_HOSTILE_DIST = 8
+/** Nobody rests in the open with a hostile in sight this close. */
+export const WEAK_HOLD_DIST = 16
+/** A weak bot (threat.ts weakState) stays in its sealed pocket while a hostile is this close. */
+export const WEAK_POCKET_DIST = 12
 /** Health at or below which the bot rests (when fed) instead of pursuing its objective. */
 export const REST_BELOW = 10
 
@@ -53,6 +58,12 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   }
   if (b.feet === 'fire' || b.head === 'fire') {
     return { id: 'escape_fire', priority: P.emergency, skill: 'escapeLava', params: {}, reason: 'in fire' }
+  }
+  // Burning out of the lava with a water bucket: put the fire out (1 HP/s for up to 15 s). Only
+  // standing clear of the lava: escapeLava can end at the edge, and an extinguish there held the
+  // bot still in the lava (b3-smoke2 r01: died during it, 3.7 HP every half second).
+  if (s.vitals.onFire && s.dim === 'overworld' && s.inLiquid === 'none' && s.onGround && !lavaWithin(s, EXTINGUISH_CLEAR) && (s.inventory.water_bucket ?? 0) > 0 && !cd.active('extinguish')) {
+    return { id: 'extinguish', priority: P.emergency, skill: 'extinguish', params: {}, reason: `on fire, hp ${Math.round(s.vitals.health)}` }
   }
   if (b.head === 'water' && s.vitals.air < P0_AIR && !cd.active('surface')) {
     return { id: 'surface', priority: P.emergency, skill: 'surfaceForAir', params: {}, reason: `air ${s.vitals.air}` }
@@ -85,13 +96,22 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
     s.nearby.entities.some(e => e.kind === 'hostile' && e.dist < 20) && !cd.active('shelter')) {
     return { id: 'shelter', priority: P.maintenance, skill: 'shelter', params: {}, reason: `night, capacity ${capacity(s)}` }
   }
+  // Hungry with only raw meat: cook a few first (a cooked porkchop restores 8, a raw one 3).
+  // Re-gate 20261003: 105 raw items eaten or lost, 30–40 % of the meat in the food-timeout runs.
+  const cook = !th.engage && s.inLiquid === 'none' && active.skill !== 'smelt' && !cd.active('cook') ? cookPlan(s) : null
+  if (cook) {
+    return { id: 'cook', priority: P.maintenance, skill: 'obtain', params: { item: 'cooked_food', count: cook.count }, reason: `food ${s.vitals.food}, raw ${cook.raw}` }
+  }
   const food = chooseFood(s.inventory, s.vitals.food, s.vitals.health)
   // Hungry, or hurt and below the regeneration threshold (18) with food worth eating for it.
   if (food && (s.vitals.food <= EAT_FOOD || (s.vitals.health <= 14 && s.vitals.food < 18 && (foodPoints(food) >= 5 || s.vitals.health <= 8))) && !cd.active('eat')) {
     return { id: 'eat', priority: P.maintenance, skill: 'eat', params: {}, reason: `food ${s.vitals.food}, hp ${s.vitals.health}` }
   }
   // Hurt with a full stomach: stand still while natural regeneration works (P1 still preempts).
-  if (s.vitals.health <= REST_BELOW && s.vitals.food >= 18 && !th.engage && !cd.active('rest')) {
+  // Never in the open with a hostile in sight (B gate 20261002 r11: rested at 4 HP with a zombie
+  // at 9.7 blocks, outside the engage range, and died three seconds later).
+  const exposed = !s.body.enclosed && s.nearby.entities.some(e => e.kind === 'hostile' && e.dist < WEAK_HOLD_DIST && e.los !== false)
+  if (s.vitals.health <= REST_BELOW && s.vitals.food >= 18 && !th.engage && !exposed && !cd.active('rest')) {
     return { id: 'rest', priority: P.maintenance, skill: 'rest', params: {}, reason: `hp ${s.vitals.health}` }
   }
   if ((armorUpgrades(s.inventory, s.equipment).length || wantsShield(s.inventory, s.equipment.offHand)) && !cd.active('equip')) {
@@ -104,8 +124,12 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   // objective waits while hostiles are close (dev batch 6 r02: resumed mining next to the
   // skeleton it had just hidden from, at 7.5 HP).
   if (s.body.enclosed) {
-    if (s.nearby.entities.some(e => e.kind === 'hostile' && e.dist < HOLD_HOSTILE_DIST) && !cd.active('hold')) {
-      return { id: 'hold', priority: P.maintenance, skill: 'shelter', params: { maxMs: 30_000, whileThreat: true, near: HOLD_HOSTILE_DIST }, reason: 'sealed in, hostiles near' }
+    // A weak bot also waits out hostiles further off (from inside the pocket nothing is in sight).
+    const weak = weakState(s, th.capacity)
+    const near = s.nearby.entities.filter(e => e.kind === 'hostile' && e.dist < (weak ? WEAK_POCKET_DIST : HOLD_HOSTILE_DIST))
+    if (near.length && !cd.active('hold')) {
+      const r = Math.max(HOLD_HOSTILE_DIST, ...near.map(e => Math.ceil(e.dist) + 1))
+      return { id: 'hold', priority: P.maintenance, skill: 'shelter', params: { maxMs: 30_000, whileThreat: true, near: r, ...(weak ? { weak: true } : {}) }, reason: `sealed in, hostiles near${weak ? ' (weak)' : ''}` }
     }
     return null
   }
@@ -119,13 +143,42 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   }
   const prey = forageTarget(s, active, th.mobs.length > 0)
   if (prey && !cd.active('forage') && !cd.active(`forage:${prey.id}`)) {
-    return { id: 'forage', priority: P.maintenance, skill: 'hunt', params: { item: 'raw_meat', count: countOf(s.inventory, 'raw_meat') + 1, mobs: [prey.name], maxDist: FORAGE.maxDist, searchSteps: 0, targetId: prey.id }, reason: `${prey.name}@${prey.dist}` }
+    return { id: 'forage', priority: P.maintenance, skill: 'hunt', params: { item: 'raw_meat', count: countOf(s.inventory, 'raw_meat') + 1, mobs: [prey.name], maxDist: FORAGE.wideDist, searchSteps: 0, targetId: prey.id }, reason: `${prey.name}@${prey.dist}` }
   }
   return null
 }
 
+/** Lava this close (blocks) rules out stopping to put a fire out. */
+export const EXTINGUISH_CLEAR = 2.5
+const lavaWithin = (s: WorldState, r: number) => s.nearby.hazards.some(h => h.kind === 'lava' && h.dist <= r) || s.body.feet === 'lava' || s.body.head === 'lava'
+
+/** Raw food cooked per `cook` interrupt (10 s each in a furnace). */
+export const COOK = { max: 4 } as const
+
+/**
+ * Cook before eating raw: hungry (food ≤ EAT_FOOD) but not in an emergency, nothing to eat
+ * except raw meat, and the furnace work needs nothing gathered (a furnace or its cobblestone,
+ * and fuel, are carried or a furnace stands nearby). Overworld only. Null when not applicable.
+ */
+export function cookPlan (s: WorldState): { count: number; raw: number } | null {
+  if (s.dim !== 'overworld' || s.vitals.food > EAT_FOOD) return null
+  if (s.vitals.health <= EMERGENCY.health || s.vitals.food <= EMERGENCY.food) return null
+  const choice = chooseFood(s.inventory, s.vitals.food, s.vitals.health)
+  if (choice && !GROUPS.raw_meat!(choice)) return null
+  const raw = cookableRaw(s.inventory)
+  if (raw < 1) return null
+  const count = cookedCount(s.inventory) + Math.min(raw, COOK.max)
+  try {
+    const { steps } = planObtain('cooked_food', count, s.inventory, hintsFrom(s))
+    if (steps.some(st => st.kind !== 'craft' && st.kind !== 'smelt')) return null
+  } catch {
+    return null
+  }
+  return { count, raw }
+}
+
 /** Opportunistic food (gate 20260929: hunt objectives 12 % success, long surface searches). */
-export const FORAGE = { maxDist: 12, dayFrom: 23_300, dayUntil: 12_000, until: 14 } as const
+export const FORAGE = { maxDist: 12, wideDist: 24, dayFrom: 23_300, dayUntil: 12_000, until: 14 } as const
 
 /**
  * A food animal close by while the bot is on the surface in daylight, with no
@@ -140,7 +193,9 @@ export function forageTarget (s: WorldState, active: { skill: string | null; pri
   if (cookedCount(s.inventory) + countOf(s.inventory, 'raw_meat') >= FORAGE.until || s.freeSlots < 1) return null
   // Aquatic hostiles about: prey at the water's edge is left (re-gate 20260930, drowned deaths).
   const shoreUnsafe = aquaticThreats(s).length > 0
-  const e = s.nearby.entities.find(x => x.kind === 'passive' && FOOD_ANIMALS[x.name] && !FISH.has(x.name) && !x.baby && x.dist <= FORAGE.maxDist && x.los !== false && Math.abs(x.pos[1] - s.pos[1]) <= 3 &&
+  // Short of the cooked-food stock: a wider detour while walking for something else (wood, gravel).
+  const maxDist = cookedCount(s.inventory) + countOf(s.inventory, 'raw_meat') < FORAGE.until ? FORAGE.wideDist : FORAGE.maxDist
+  const e = s.nearby.entities.find(x => x.kind === 'passive' && FOOD_ANIMALS[x.name] && !FISH.has(x.name) && !x.baby && x.dist <= maxDist && x.los !== false && Math.abs(x.pos[1] - s.pos[1]) <= 3 &&
     !(shoreUnsafe && waterCellsNear(s, x.pos, AQUATIC.shore).length))
   return e ? { id: e.id, name: e.name, dist: e.dist } : null
 }

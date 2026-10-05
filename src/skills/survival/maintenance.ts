@@ -180,8 +180,13 @@ export const shelter: SkillDef<z.infer<typeof Shelter>, { waitedMs: number; capp
   },
 }
 
-/** Sky dark enough to spawn monsters on the surface, with a margin at dusk (ticks). */
-const NIGHT_SHELTER = { start: 12_500, end: 23_200 } as const
+/**
+ * Night for the shelter wait (ticks): the same window as the controller's schedule
+ * (controller/schedule.ts SCHEDULE.nightFrom/nightUntil). Narrower, it made the scheduled
+ * night shelter return at once at dusk and dawn and be reissued several times a second
+ * (dev batch 20261002-225340 r05/r06).
+ */
+const NIGHT_SHELTER = { start: 12_500, end: 23_300 } as const
 
 const Rest = z.object({ maxMs: z.number().int().positive().default(40_000) })
 

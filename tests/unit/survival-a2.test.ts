@@ -220,7 +220,10 @@ describe('opportunistic forage', () => {
   it('takes a short detour for a nearby adult food animal by day on the surface', () => {
     expect(forageTarget(fakeState({ nearby: near(cow(8)) }), { skill: 'collect', priority: 3 }, false)).toMatchObject({ name: 'cow' })
     expect(forageTarget(fakeState({ nearby: near(cow(8, { baby: true })) }), none, false)).toBeNull()
-    expect(forageTarget(fakeState({ nearby: near(cow(20)) }), none, false)).toBeNull()
+    // Short of the cooked-food stock the detour reaches 24 blocks (B round 3); with the stock held, 12.
+    expect(forageTarget(fakeState({ nearby: near(cow(20)) }), none, false)).toMatchObject({ name: 'cow' })
+    expect(forageTarget(fakeState({ nearby: near(cow(30)) }), none, false)).toBeNull()
+    expect(forageTarget(fakeState({ inventory: { beef: 13 }, nearby: near(cow(20)) }), none, false)).toMatchObject({ name: 'cow' })
     expect(forageTarget(night({ nearby: near(cow(8)) }), none, false)).toBeNull()
     expect(forageTarget(fakeState({ nearby: near(cow(8)) }), { skill: 'hunt', priority: 3 }, false)).toBeNull()
     expect(forageTarget(fakeState({ nearby: near(cow(8)) }), none, true)).toBeNull()

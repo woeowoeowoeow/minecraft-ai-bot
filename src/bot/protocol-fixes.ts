@@ -35,6 +35,57 @@ export function installDigAck (bot: Bot, onCorrection?: (c: DigAckCorrection) =>
 }
 
 /**
+ * Apply the server's cursor slot (`set_slot` with window −1, slot −1).
+ *
+ * After a rejected click the 1.16.1 server resends the window contents and the item on the
+ * cursor. Mineflayer drops the cursor packet (no window −1), so a stack picked up by the
+ * accepted first click of a move whose second click was rejected stays "on the cursor"
+ * with no client-side record of whether the server still has it there. B gate 20261002:
+ * buckets and cobblestone went missing from the client model after portal-site rejections.
+ */
+export function installCursorSync (bot: Bot, onCursor?: (item: string | null) => void): { enabled: boolean } {
+  const client = bot._client as unknown as { on (ev: string, fn: (p: { windowId: number; slot: number; item: unknown }) => void): void }
+  let Item: { fromNotch (n: unknown): { name: string } | null } | null = null
+  // `enabled` lets a fixture reproduce the uncorrected client (tests/scenario/b-round2).
+  const ctl = { enabled: true }
+  client.on('set_slot', (p) => {
+    if (!ctl.enabled || p.windowId !== -1 || p.slot !== -1) return
+    Item ??= createRequire(import.meta.url)('prismarine-item')(bot.registry) as typeof Item
+    const it = Item!.fromNotch(p.item)
+    const inv = bot.inventory as unknown as { selectedItem: unknown }
+    inv.selectedItem = it
+    const w = bot.currentWindow as unknown as { selectedItem: unknown } | null
+    if (w) w.selectedItem = it
+    onCursor?.(it?.name ?? null)
+  })
+  return ctl
+}
+
+/**
+ * Drop the client's status effects on every `respawn` packet.
+ *
+ * The vanilla client builds a new player entity on respawn, so its effects start empty;
+ * the server then re-sends the ones still active (after a dimension change) and none
+ * after a death. Mineflayer keeps `bot.entity.effects` across respawns, so an effect the
+ * server already removed with the dead player stays on the client forever. B gate
+ * 20261002 r09 and part2-r01: Mining Fatigue from an elder guardian survived 2–3 deaths
+ * (725 state samples), every client dig waited ~1000 s for the predicted break time, and
+ * wood collection stalled 13 times on one log.
+ */
+export function installRespawnEffectsReset (bot: Bot, onReset?: (cleared: string[]) => void): void {
+  const client = bot._client as unknown as { on (ev: string, fn: () => void): void }
+  client.on('respawn', () => {
+    const e = bot.entity as unknown as { effects?: Record<string, unknown> } | undefined
+    if (!e?.effects) return
+    const ids = Object.keys(e.effects)
+    if (!ids.length) return
+    e.effects = {}
+    const names = ids.map(id => bot.registry.effects?.[Number(id)]?.name ?? id)
+    onReset?.(names)
+  })
+}
+
+/**
  * Bound prismarine-world's raycast iterator. With a non-finite direction (a zero-length
  * vector normalised to NaN) every comparison in `RaycastIterator.next` is false, so it
  * never returns null and `world.raycast` spins forever on the event loop: Mineflayer

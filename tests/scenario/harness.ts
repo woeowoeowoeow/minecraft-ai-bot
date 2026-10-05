@@ -12,7 +12,8 @@ import { resolveJava } from '../../src/evaluation/java.js'
 import { JAR, ROOT, WORLDS } from '../../src/evaluation/run.js'
 import { ServerProcess } from '../../src/evaluation/server.js'
 import { MC_VERSION } from '../../src/version.js'
-import { installDigAck, installRaycastGuard } from '../../src/bot/protocol-fixes.js'
+import { installCursorSync, installDigAck, installRaycastGuard, installRespawnEffectsReset } from '../../src/bot/protocol-fixes.js'
+import { onInventoryRetry } from '../../src/bot/inventory-sync.js'
 import { loadPathfinder, PathfinderNavigator } from '../../src/nav/pathfinder.js'
 import { EventBus } from '../../src/observer/events.js'
 import type { EventRecord } from '../../src/schema/index.js'
@@ -39,6 +40,8 @@ export type Fixture = {
   /** Teleport, clear inventory, reset vitals, and wait for the client to settle. */
   place (x: number, y: number, z: number, items?: Record<string, number>): Promise<void>
   close (): Promise<void>
+  /** The 1.16.1 cursor-slot fix (protocol-fixes.ts); a fixture may switch it off to reproduce the old client. */
+  cursorSync: { enabled: boolean }
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -67,6 +70,9 @@ export async function startFixture (name: string, fo: FixtureOptions = {}): Prom
   bus.on(ev => { events.push(ev) })
   installDigAck(bot, c => bus.emit('dig_ack_correction', c, 'warn'))
   installRaycastGuard(why => bus.emit('error', { message: `raycast guard: ${why}` }, 'warn'))
+  installRespawnEffectsReset(bot, cleared => bus.emit('effects_reset', { cleared }, 'info'))
+  const cursorSync = installCursorSync(bot)
+  onInventoryRetry(bot, r => bus.emit('inventory_retry', r, 'warn'))
   loadPathfinder(bot)
   const nav = new PathfinderNavigator(bot, bus)
 
@@ -99,5 +105,5 @@ export async function startFixture (name: string, fo: FixtureOptions = {}): Prom
     await server.stop().catch(() => {})
     rmSync(worldDir, { recursive: true, force: true })
   }
-  return { server, bot, bus, nav, events, cmd, fill, reset, place, close }
+  return { server, bot, bus, nav, events, cmd, fill, reset, place, close, cursorSync }
 }

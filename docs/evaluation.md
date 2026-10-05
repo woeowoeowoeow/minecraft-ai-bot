@@ -592,3 +592,239 @@ The B gate: 20 held-out seeds, ≥ 60 % within 70 min, ≤ 1 death/run, 0 interv
    - r02: deaths near the portal site at an open area cascaded into a timeout.
 
 **Gate: milestone B FAILS on deaths/run (1.10 > 1.0).** The reach rate and every portal and Nether metric pass. The leading cause is diagnosed (early-game death cascades), so C should not start: the next round should fix the death classes and re-gate B on a new held-out set.
+
+### Milestone B round 2 (death cascades, wood stalls, inventory rejections) on 1.16.1: 2026-10-02/03 (code uncommitted on 9190887; dev seed sets and fixtures, never a gate)
+
+Brief: pass the unchanged B gate by fixing only the measured causes of gate 20261002. No C work, `reasoner=none`. Design in architecture §10D.
+
+**Diagnosis of the B gate (bundles of r02, r04, r06, r07, r09, r11, r13, part2-r01):**
+- **Wood stalls (13 occurrences, 2 runs) were Mining Fatigue.** Both runs met an elder guardian, and state samples show `MiningFatigue` from then on: 293 and 725 samples, across 2–3 deaths. Mineflayer keeps entity effects across a respawn. Each bare-handed log dig then waited about 1000 s for the client-predicted break time, the 60 s stall watchdog fired, and the retry went back to the same log. These two runs also account for 7 of the 22 deaths: the bot stayed bare-handed, and its night dig-in found "no diggable column".
+- **Item recovery walked into the killers.** 9 recovery walks: 8 were cancelled by threats, and 1 recovered a single item. 4 of the 5 repeat deaths within 5 minutes followed one (r04, r06, r07, r11). Example: r11 walked 131 blocks bare-handed back into the skeleton cave and died 58 s after respawning.
+- **Weak flight and rest.** r11 rested at 4 HP with the zombie at 9.7 blocks. r02 fled at 5.8 HP; its `eat` then failed on a rejected click, and it died at 0.4 HP. After A, a death left the bot without a sword for the rest of B work (r02 ×2, r13): `stone_sword` was not kept after nether_ready.
+- **Inventory rejections (26: portal 20, eat 2, smelt 2, fillBucket 2).** The rejections came during portal-site digging, with drops flowing in, while equips moved stacks into a full hotbar. The client's cursor model was stale: Mineflayer ignores 1.16.1's cursor `set_slot` (window −1). On rejection Mineflayer throws, and the skills reported that as INFRA.
+- **Not addressed (residual):** a water trap at a frozen-ocean iceberg (r04: the bot's x/z unchanged for about 500 s while every water exit failed). No server-side cause was found.
+
+**Fixes, tests and fixtures:**
+- Unit tests: `tests/unit/b-round2.test.ts`, 13 tests: effects reset, cursor sync, bounded dig, stalled-target blacklist, `safeEquip` retry, serialization and the limit, weak-state threat, rest and hold, respawn wait, dry search. Recovery and milestone-B tests were updated for the new rules. 230/230 unit tests pass.
+- Real-server fixtures: `tests/scenario/b-round2.scenario.test.ts`, 7 tests, all passing:
+  - portal-site swaps: Mineflayer's plain equip was rejected in 3 of 5 fixture runs (4, 6 and 5 rejections; the race is probabilistic and only recorded). The new path never failed: 0 failures, up to 4 retries absorbed;
+  - concurrent swaps;
+  - a stale container window: a plain equip gets "Server didn't respond … window with id 1", while the new equip resets the windows and lands;
+  - fatigue before a death is cleared after the respawn, and 2 logs are collected in under 30 s;
+  - real fatigue fails fast (`effect=mining_fatigue`, under 20 s);
+  - an unreachable log is blacklisted and a reachable one collected;
+  - bare-handed against a zombie 7 blocks away: a sealed pocket, no damage, and a hold.
+- Existing fixtures: the survival crowd-flee test now accepts "clear, or sealed in after the flight". Full scenario suite: 57/58. The night-shelter cap check failed once and passed 2/2 on re-run; that code was not changed.
+
+**Dev batches (fresh dev seeds, full B scenario):**
+
+| batch | runs | B | deaths/run | notes → fix |
+|---|---|---|---|---|
+| `20261002-211157-b-b2-dev1` | 3 | 3/3 | 0 | 1 smelt furnace-window rejection (STATE_INCONSISTENT, recovered) |
+| `20261002-225340-b-b2-dev2` | 6 | 3/6 | 1.83 (11) | **Fixes:** (1) a 15 s blind window after every death: `once('spawn')` started after the automatic respawn (r06: shot from 20 to 4 HP at the respawn point) → `respawnWaiter`; (2) a weak bot dug out of its pocket next to a skeleton → weak hold chain; (3) hunt and wood search steps led back into drowned water (r05) → dry search; (4) the shelter night window differed from the schedule's, so shelter was reissued several times a second. Also seen, not fixed: an open-ocean night stint ending L5 (r03, "no place to put crafting_table" ×14), 1 Nether lava death. |
+| `20261003-041048-b-b2-dev3` | 6 | 3/6 | 0.83 (5) | 0 repeat deaths, 0 rejection failures (1 absorbed). **r05:** an unanswered crafting-table click left a window the server had closed; every later equip timed out for 41 min (L5 `stone_pickaxe` ×14) → `resetWindows`. r03: a ghast killed it in the Nether while resting, then timeout. r06: food search in an animal-poor world (food_10 at 3854 s), timeout. |
+| `20261003-092337-b-b2-dev3-r05replay` | 1 (dev3 r05 seed) | 1/1 | 1 | B at 2523 s; the wedge did not recur |
+
+Dev evidence, each dev3 seed's latest run: **4/6 reached B, 0.83 deaths/run, no death-cascade cluster.** This meets the brief's bar for the formal gate.
+
+### Milestone B re-gate on 1.16.1: 2026-10-03/04 (code uncommitted on 9190887, content hash `f9406fd15c1c6d7f`; Node 22.23.3, Java 1.8.0_504, mineflayer 4.39.0)
+
+`20261003-103119-b-b2-gate`: 20 new held-out seeds; the B gate unchanged (≥ 60 % within 70 min, ≤ 1 death/run, 0 interventions); `reasoner=none`, `--parallel 1`, under `caffeinate`, on AC power with sleep disabled. All 20 seeds were written to `private/seeds.json` before the first run. The content hash was re-verified after the batch. No held-out run was examined before all 20 had finished.
+
+| metric | value | gate | previous gate (20261002) |
+|---|---|---|---|
+| reached B ≤ 70 min | **9/20 = 45 %** (Wilson 95 % CI 25.8–65.8 %) | ≥ 60 % ✗ | 15/20 = 75 % |
+| deaths/run | **23 → 1.15** | ≤ 1 ✗ | 22 → 1.10 |
+| interventions | 0 | 0 ✓ | 0 |
+| infra errors | 0 | – | 1 (host crash) |
+| ground truth on B claims | 9/9 verified | – | 15/15 |
+| outcomes | 9 goal, 9 timeout, 2 unrecoverable | – | 15 goal, 2 timeout, 1 death_limit, 1 unrecoverable, 1 infra |
+
+**Round-2 targets (measured on this set):**
+
+| | this gate | previous gate |
+|---|---|---|
+| deaths before nether_ready | 15 | 17 |
+| repeat deaths < 5 min after the previous one | **0** | 6 (in 6 runs) |
+| wood-search stalls (log) | **4** | 13 |
+| inventory-click skill failures | 1 (a furnace-window click in `smelt`, not a swap) | 26 (20 in portal builds) |
+| rejected equips retried and absorbed | 2 | – |
+| stale effects cleared on respawn | 0 (no elder guardian met) | – |
+
+**B legs:**
+- 14/20 reached nether_ready; 11 built a portal, all by lava cast. 134 cells cast with 0 failed casts; 136 lava fetches with 15 failed attempts.
+- 10 entered the Nether and 9 returned.
+- Nether deaths: 1 (r07: a ghast fireball while resting at 5 HP during `return_overworld`, after an earlier death had cost its iron gear; r07 still reached B).
+- Portal entry failures: r04 and r10, `STATE_INCONSISTENT usePortal step=teleport` ×14. In r04, a skeleton right after the build sent the armed bot into a cover dig-in beside the frame, and the walk-only portal approach could not leave the pocket (NAV_UNREACHABLE, reported as "stood in the portal").
+- B-kit timeouts after nether_ready: r08 (`b_bucket` 662 s, `b_gold_armor` 616 s) and r19 (`b_gold_armor` 1534 s).
+
+**Where the failed runs' time went.** 9 timeouts and 2 L5 terminations. 6 runs never reached nether_ready (r05, r09, r12, r13, r14, r15), and r16 reached it at 4054 s. Their largest objectives were surface resource searches:
+- **logs:** r12 2012 s and r15 2986 s, 80 search steps each and > 1600–2100 blocks from spawn at sea level without a log; r14 1207 s;
+- **gravel for flint:** r05 1351 s (terminated: `flint_and_steel` ×14, gravel on lake beds reachable only from water), r09 910 s, r13 1114 s, r16 1004 s. 18 flint collect stalls and 21 unreachable-gravel failures, against 0 and 0 in the previous gate; `flint_and_steel` took 518 s/run against 332/215 s. No code changed in this round touches gravel targeting;
+- **food hunts:** 56 `SEARCH_EXHAUSTED food` in 6 runs.
+
+Scheduled night shelter rose to 477 s/run (previous gate 228/174). Most of it was in runs still without iron gear at night; the shelter window change (dusk 12 500 → 12 000) adds about 25 s per night.
+
+**Deaths (23):**
+- killers: zombie 5, skeleton 4, lava 3, drowning 3, creeper 2, drowned 2, other 2, ghast 1, polar bear 1;
+- 11 during flee;
+- weapon at death: iron sword 13, stone sword 8, hand 2.
+
+Bare-handed deaths fell from 11 to 2, and there were 0 cascades. The remaining deaths are spread over 12 runs.
+
+**Gate: milestone B FAILS** on the reach rate (45 % < 60 %) and on deaths/run (1.15 > 1.0). The death-cascade class this round targeted is gone: 0 repeat deaths within 5 minutes and 2 bare-handed deaths. **Single dominant remaining cause: A-phase surface resource acquisition on poor terrain** (logs in treeless or water-dominated areas, gravel for flint on lake and river beds, food animals). It held 6 of 11 failed runs short of nether_ready within 70 min, and night sheltering in those runs compounded it. C must not start.
+
+### Milestone B round 3 (resource search on poor terrain) on 1.16.1: 2026-10-04 (code uncommitted on 9190887; dev seed sets and fixtures, never a gate)
+
+Brief: pass the unchanged B gate by fixing the dominant remaining cause, slow A-phase resource gathering on treeless and water-heavy starts. No C, no B redesign, `reasoner=none`. Design in architecture §10E.
+
+**Diagnosis of re-gate `20261003-103119-b-b2-gate`** (all 20 bundles; the batch report's new resource section, run retroactively):
+
+| | 20 runs | notes |
+|---|---|---|
+| night shelter | 16 119 s (p50 746, p90 1 415 s/run) | the first night of 12 runs sheltered with only `food` deferred; failed runs 900–2 300 s |
+| food (hunt) | 10 582 s, 28 700 blocks | animals remembered only within 32 blocks, though the server sends them to 144; 122 spot visits; 56 `SEARCH_EXHAUSTED food` |
+| raw meat eaten or lost uncooked | 105 items | 30–40 % of the meat in r10, r11, r13, r16, r19: hungry during long hunts with only raw meat |
+| wood (collect log) | 6 211 s, 13 917 blocks | r12 and r15 (ocean spawns) swam outward 1 600–2 100 blocks; after a respawn at the same spawn, r15 re-searched the same corridor and r12 re-searched although it had cut logs 900 blocks away |
+| gravel for flint | 3 589 s | r05: lake-bed gravel dug from the water, the bot stuck in a water hole, run terminated (`flint_and_steel` ×14); r09: 40 blocks of one unreachable bank, 5 per attempt |
+
+**Fixes:** architecture §10E: the surface relocator with a terrain survey and searched regions; tree spots and wide log scans; flint knapped from mined gravel; animal memory to 144 blocks; cook before eating raw; night fillers (cooking, golden helmet before nether_ready); dusk 12 500; the report section. Crops and hay: not built (1 pickup in ~46 B-phase runs, and bread does not count as cooked food). Boats: not built (a treeless start has no wood for a boat).
+
+**Tests:**
+- Unit: `tests/unit/b-round3.test.ts`, 19 tests: heading survey (coast, trees, novelty, searched regions after a respawn, no circling, failed headings), region refresh and expiry, log clustering, tree and animal spots, `cookPlan` cases, night fillers (order, day, after nether_ready, invariant), flint plan. Two updated: flint is now knapped from mined gravel; forage reaches 24 blocks while the stock is short. 249/249 pass.
+- Fixtures: `tests/scenario/b-round3.scenario.test.ts`, 8/8 on the real server:
+  - ocean start: one relocation at 90°, toward the coast, then the loaded log 94 blocks off;
+  - remembered tree 360 blocks away walked to directly, with no relocation;
+  - pond gravel 49/49 untouched, flint from a dry bank;
+  - carried gravel knapped;
+  - unreachable bank: 27/27 blacklisted, then a reachable block mined;
+  - a cow 100 blocks off remembered and hunted;
+  - a hungry bot cooks 4 of 6 porkchops and carries the furnace on;
+  - night order `cook_raw` → `pre_gold_armor` → shelter.
+- Related existing fixtures: acquisition, shoreline, survival and b-round2, 28/29. The cod fixture failed once after the cow test, a known flake; it passes on re-run.
+
+**Smoke 1 (`20261004-112726-b-b3-smoke1`, 3 fresh dev seeds), stopped by hand during r01 at about 3 200 s; r02 and r03 never ran.** The batch was stopped to fix what r01 showed rather than run two more seeds with known bugs.
+- Worked:
+  - Night filler `pre_gold_armor` mined the golden helmet at night (762–848 s).
+  - Flint and steel took 38 s, at night.
+  - After each death the bot walked straight to a remembered tree (194 and 198 blocks away).
+  - An ocean-ish spawn (67 % water) found logs 116 blocks off after one relocation.
+- Failed:
+  - At t = 1 s, before chunks had loaded, the bot relocated and marked its spawn area searched for logs.
+  - The night was spent mining under a mountain. At dawn the hunt's `toSurface` failed (goal y 64, surface at y 79), and the hunt walked toward remembered animal spots through caves into lava (y 10). The bot escaped at 8.9 HP, burned to death while resting with a water bucket, and later also died to a skeleton.
+- Fixes: architecture §10E, "After smoke 1".
+- Tests:
+  - Unit: 251/251, adding `extinguish` selection.
+  - Round-3 fixtures: 9/9, adding a real on-fire bot, put out with the water bucket scooped back.
+
+**Smoke 2 (`20261004-123116-b-b3-smoke2`, 3 fresh dev seeds), stopped by hand during r01 at about 1 800 s.**
+- r01 reached nether_ready at **820 s**, against a gate p50 of 1 436 s. The day-1 hunt walked to remembered spots, `cook` fired once, and the night filler `cook_raw` cooked the stock at night, so food_10 and nether_ready came at 820 s.
+- It then died in lava during the portal build (1 054 s), and **the new `extinguish` reflex caused that death**. `escapeLava` ended at the lava's edge. `extinguish` (also P0, so nothing preempted it) then held the bot still for 1.9 s while it took lava damage (3.7 HP every half second).
+- Fix: `extinguish` fires only on the ground with no lava within 2.5 blocks, and stops if lava comes that close. Unit test added (252/252); the fire fixture passes.
+
+**Smoke 3 (`20261004-130354-b-b3-smoke3`, 3 fresh dev seeds, code after the smoke-2 fixes): 3/3 reached B, 0 deaths, ground truth ✓ on all 3.**
+
+| run | nether_ready s | B s | deaths | notes |
+|---|---|---|---|---|
+| r01 | 842 | 1 435 | 0 | food_10 at 705 s, in day 1 |
+| r02 | 1 431 | 2 757 | 0 | night fillers `cook_raw` and `pre_gold_armor`. Portal phase (B behaviour, unchanged): at 8 of 10 cast cells the pool was judged "unusable: no safe stand reaches an open source". The bot moved to a site 100 blocks away and wore out its pickaxes tunnelling, then re-crafted and built. |
+| r03 | 1 438 | 1 931 | 0 | night filler `pre_gold_armor`; food in day 2 from 6 remembered-spot visits |
+
+**Dev batch (`20261004-144730-b-b3-dev1`, 6 fresh dev seeds, same code as smoke 3): 5/6 reached B (Wilson 95 % CI 43.6–97 %), 0 deaths, nether_ready 6/6 (p50 1 535 s), ground truth ✓ on every run.**
+
+| run | nether_ready s | B s | deaths | notes |
+|---|---|---|---|---|
+| r01 | 2 576 | 2 837 | 0 | food took 757 s and 2 158 blocks: 23 remembered-spot visits in sparse terrain |
+| r02 | 798 | 1 344 | 0 | – |
+| r03 | 1 709 | 2 126 | 0 | 3 animal relocations |
+| r04 | 1 553 | 2 015 | 0 | – |
+| r05 | 1 517 | – | 0 | **L5: `nether_excursion` failed 14× (NAV_HAZARD).** No safe excursion target at the arrival portal. The tunnel fallback picked the line through the arrival portal's obsidian frame ("needs_pickaxe" with an iron pickaxe) and retried only that line over three portal trips. Fixed: see below. |
+| r06 | 796 | 2 681 | 0 | portal phase about 1 700 s: 6 lava-cast sites. Each was abandoned at 2–8 cells when the pool had no reachable open source. B behaviour, unchanged this round. |
+
+Resource section, per run, against re-gate 20261003:
+
+| | dev1 | re-gate 20261003 |
+|---|---|---|
+| wood p50 | 74 s | 140 s |
+| gravel p50 | 20 s | 73 s |
+| food p50 | 355 s | 446 s |
+| raw meat lost uncooked | 2 in 6 runs | 105 in 20 |
+| night shelter p50 | 228 s | 746 s |
+
+- Night fillers ran 8×.
+- 48 remembered animal spots were visited.
+
+**Fix after dev1 (B excursion fallback, a bug fix and not a redesign).** `tunnelTargets` (`nether-plan.ts`) now does three things:
+- rejects tunnel lines that cross a block slower than 3 s to dig with the carried tools, or a portal block;
+- returns every clear cardinal line;
+- `netherExcursion` tries each line in turn.
+
+A unit test was added: a portal frame on the east line yields the 3 other lines.
+
+Bar for the formal gate (≥ 4/6, ≤ 1 death/run, no recurring long resource-search timeout): **met**.
+
+### Milestone B re-gate (round 3) on 1.16.1: 2026-10-04/05 (code uncommitted on 9190887, content hash `6811964499b8195c`; Node 22.23.3, Java 1.8.0_504, mineflayer 4.39.0)
+
+`20261004-191217-b-b3-gate`: 20 new held-out seeds; the B gate unchanged (≥ 60 % within 70 min, ≤ 1 death/run, 0 interventions); `reasoner=none`, `--parallel 1`, under `caffeinate`.
+- All 20 seeds were written to `private/seeds.json` before the first run.
+- Content hash: `find src config package.json package-lock.json -type f | sort | xargs cat | sha256`, first 16. Verified before launch and after the batch.
+- The host ran on battery for parts of the night (lowest 10 %) but never slept or shut down.
+- No held-out run was examined before all 20 had finished.
+
+| metric | value | gate | re-gate 20261003 |
+|---|---|---|---|
+| reached B ≤ 70 min | **15/20 = 75 %** (Wilson 95 % CI 53.1–88.8 %) | ≥ 60 % ✓ | 9/20 = 45 % |
+| deaths/run | **24 → 1.20** | ≤ 1 ✗ | 23 → 1.15 |
+| interventions | 0 | 0 ✓ | 0 |
+| infra errors | 1 (r10: uncaught Mineflayer assertion) | – | 0 |
+| ground truth on B claims | 15/15 verified | – | 9/9 |
+| outcomes | 15 goal, 2 death_limit, 2 timeout, 1 infra | – | 9 goal, 9 timeout, 2 unrecoverable |
+| nether_ready | 16/20, p50 1 386 / p90 2 338 s | – | 14/20, p50 1 436 / p90 3 101 s |
+| time to B p50 / p90 | 1 753 / 2 840 s | – | 2 056 / 3 468 s |
+
+**Resource search** (report section; re-gate 20261003 values from the same code run retroactively):
+
+| | this gate | re-gate 20261003 |
+|---|---|---|
+| wood (collect log) time/run p50 / p90, total | 88 / 246 s; 2 706 s, 2 972 blocks | 140 / 889 s; 6 211 s, 13 917 blocks |
+| gravel time/run p50 / p90, total | 42 / 156 s; 1 616 s | 73 / 452 s; 3 589 s |
+| food (hunt) time/run p50 / p90, total | 260 / 438 s; 5 611 s, 14 926 blocks | 446 / 1 008 s; 10 582 s, 28 700 blocks |
+| search relocations / exhausted regions marked | animals 24, relocate 4 / animals 24 | – |
+| remembered-spot visits | animal 86, loaded logs 24, tree spot 2 | animal 122 |
+| raw food eaten or lost uncooked | 29; `cook` interrupts 18 | 105 |
+| night sheltering p50 / p90 / total | 227 / 586 s; 4 713 s | 746 / 1 415 s; 16 119 s |
+| night fillers | `cook_raw` ×15, `pre_gold_armor` ×15 | – |
+| completion: food_10 / flint and steel | 16/20 (p50 1 349 s) / 18/20 (p50 757 s) | 14/20 (p50 1 436 s) / 16/20 (p50 770 s) |
+
+**Portal and Nether.**
+- 16 runs reached nether_ready, 15 built a portal (lava cast ×15), and 15/15 entered the Nether, made the excursion (walk ×15) and returned.
+- 183 cells cast with 0 failed casts; 12 failed lava fetches.
+- 0 Nether deaths; 0 arrivals without a safe cell.
+- Site failures, all recovered: pool "no safe stand" ×5, aim ×4, fill ×4.
+
+**Deaths (24 in 9 runs):**
+- killers: drowned 8, zombie 5, skeleton 3, cave spider 2, lava 2, creeper 1, drowning 1, fall 1, other (burned) 1;
+- 23 before nether_ready; 15 at 0 armor; 9 bare-handed;
+- 6 repeat deaths < 5 min after the previous one, in 3 runs (re-gate 20261003: 0).
+
+| run | deaths | diagnosis |
+|---|---|---|
+| r08 | 5 (death_limit, 173 s) | all drowned, bare-handed, near an ocean spawn. **The new wide log scan (`loaded_logs`, ≤ 160 blocks) chose a log at y 50, 74 blocks off, on the sea floor: a shipwreck timber, not a tree.** Each walk swam through drowned water. A walk cancelled by `flee` did not blacklist the target, so it was chosen again after every flee and respawn. |
+| r02 | 5 (death_limit) | the same pattern: a `loaded_logs` / `tree_spot` target at y 36–37 in the ocean was chosen 9×, with 3 drowned deaths; then zombies ×2 at 0 armor |
+| r06 | 3 (timeout) | creeper (food). Drowning during night filler `pre_gold_armor`. Skeleton while re-gearing. 23 animal relocations; gravel and gold mining NAV_HAZARD ×13. |
+| r15 | 3 (B at 3 726 s) | fall; lava ×2, one during `pre_gold_armor` at night |
+| r04 | 2 (timeout) | cave spider ×2: one during `pre_gold_armor` at night, one during the portal build; nether_ready at 1 991 s, portal not finished |
+| r10 | 2 (infra) | skeleton, zombie; then the bot process crashed: Mineflayer `Window.acceptClick` "invalid operation", an uncaught assertion in the transaction-confirm handler |
+| r17 | 2 | zombie during `pre_gold_armor` at night; skeleton |
+| r01, r20 | 1 each | burning (on fire while resting at night at 900 s); zombie |
+
+- 4 deaths came during the night filler `pre_gold_armor`, mining at night (r04, r06, r15, r17). Before this round those bots sheltered.
+- 8 deaths came from far-log targets on the sea floor (r02, r08).
+
+**Gate: milestone B FAILS on deaths/run (1.20 > 1.0).** The reach rate passes (75 % against 60 %), and the A-phase resource causes this round targeted are largely gone:
+- nether_ready 16/20;
+- wood, gravel and food time all well below the previous gate;
+- night shelter down 71 %;
+- no long resource-search timeout.
+
+**Single dominant remaining cause: early drowned death cascades at ocean spawns, caused by this round's wide log targeting.** Log blocks on the sea floor (shipwrecks), not trees, were accepted as wood targets and re-chosen after every flee and respawn. This produced 8 of the 24 deaths and both death_limit runs. Without them the gate would have had 16 deaths (0.80/run). Proposed fix, not built: accept as wood only logs with leaves within a few blocks above them and no water around them; blacklist a wood target whose walk a threat interrupted. Secondary, in order: deaths during the night filler `pre_gold_armor` (4); the Mineflayer `acceptClick` crash (1 infra run). **C must not start.**

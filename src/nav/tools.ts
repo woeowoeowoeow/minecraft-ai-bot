@@ -3,6 +3,7 @@
 import type { Bot } from 'mineflayer'
 import type { Block } from 'prismarine-block'
 import type { Item } from 'prismarine-item'
+import { safeEquip, serialInventory } from '../bot/inventory-sync.js'
 import { toolTier } from '../version.js'
 
 function withTimeout<T> (p: Promise<T>, ms: number, what: string): Promise<T> {
@@ -47,10 +48,10 @@ export function bestTool (bot: Bot, block: Block): Item | null {
 export async function equipFor (bot: Bot, block: Block): Promise<Item | null> {
   const tool = bestTool(bot, block)
   if (tool) {
-    if (bot.heldItem?.slot !== tool.slot) await withTimeout(bot.equip(tool, 'hand'), 3000, 'equip')
+    if (bot.heldItem?.slot !== tool.slot) await safeEquip(bot, tool.name, 'hand', { slot: tool.slot })
   } else if (bot.heldItem && (toolTier(bot.heldItem.name) !== null || (bot.heldItem as unknown as { maxDurability?: number }).maxDurability)) {
     // Digging with any damageable item wears it; use the empty hand instead.
-    await withTimeout(bot.unequip('hand'), 3000, 'unequip').catch(() => {})
+    await serialInventory(bot, () => withTimeout(bot.unequip('hand'), 3000, 'unequip')).catch(() => {})
   }
   return tool
 }

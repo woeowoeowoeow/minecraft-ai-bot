@@ -50,7 +50,7 @@ describe('recovery ladder (L2 → L3 → L5)', () => {
 })
 
 describe('death handling (architecture §7.4)', () => {
-  const death = { pos: [10, 64, 10] as [number, number, number], dim: 'overworld', t: 100, lost: { iron_ore: 12, stone_pickaxe: 1 }, cause: 'Bot was slain by Zombie' }
+  const death = { pos: [10, 64, 10] as [number, number, number], dim: 'overworld', t: 100, lost: { iron_ore: 12, stone_pickaxe: 1 }, cause: 'Bot fell from a high place' }
   it('goes back only for fresh, reachable, intact drops', () => {
     expect(recoverDecision(death, [death], 150, [0, 64, 0], 'overworld').recover).toBe(true)
     expect(recoverDecision(death, [death], 400, [0, 64, 0], 'overworld').reason).toMatch(/despawn/)
@@ -58,6 +58,23 @@ describe('death handling (architecture §7.4)', () => {
     expect(recoverDecision(death, [death], 150, [900, 64, 0], 'overworld').recover).toBe(false)
     expect(recoverDecision(death, [{ ...death, t: 20 }, death], 150, [0, 64, 0], 'overworld').reason).toMatch(/died there before/)
     expect(recoverDecision({ ...death, lost: { dirt: 30 } }, [], 150, [0, 64, 0], 'overworld').recover).toBe(false)
+  })
+
+  // B gate 20261002: 8 of 9 recovery walks were cancelled by threats; 4 of 5 repeat deaths within 5 min followed one.
+  it('after a mob death goes back only for high-value items, by day, to a quiet surface site', () => {
+    const mob = { ...death, cause: 'Bot was slain by Zombie' }
+    const quiet = { covered: false, hostiles: [{ name: 'zombie', dist: 2 }] }
+    // stone tools and ore are rebuilt faster than fetched (r07, r11)
+    expect(recoverDecision(mob, [], 150, [0, 64, 0], 'overworld', quiet)).toMatchObject({ recover: false, reason: expect.stringMatching(/low-value/) })
+    const gear = { ...mob, lost: { iron_sword: 1, iron_helmet: 1, shield: 1, cobblestone: 20 } }
+    expect(recoverDecision(gear, [], 150, [0, 64, 0], 'overworld', quiet).recover).toBe(true)
+    expect(recoverDecision(gear, [], 150, [0, 64, 0], 'overworld', quiet, true).reason).toMatch(/night/)
+    expect(recoverDecision(gear, [], 150, [0, 64, 0], 'overworld', { ...quiet, covered: true }).reason).toMatch(/under cover/) // r02: cave
+    // r06: a spider and two skeletons about
+    expect(recoverDecision(gear, [], 150, [0, 64, 0], 'overworld', { covered: false, hostiles: [{ name: 'spider', dist: 1 }, { name: 'skeleton', dist: 7 }] }).reason).toMatch(/shooter/)
+    expect(recoverDecision(gear, [], 150, [0, 64, 0], 'overworld', { covered: false, hostiles: [{ name: 'zombie', dist: 1 }, { name: 'zombie', dist: 9 }] }).recover).toBe(false)
+    // a terrain death is not a mob death: the site rules do not apply
+    expect(recoverDecision({ ...gear, cause: 'Bot fell from a high place' }, [], 150, [0, 64, 0], 'overworld', { ...quiet, covered: true }).recover).toBe(true)
   })
 })
 

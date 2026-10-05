@@ -64,29 +64,41 @@ export function excursionTargets (view: BlockView, portal: V3, minDist: number, 
   return [...best.values()].sort((a, b) => a.score - b.score || a.p[0] - b.p[0] || a.p[2] - b.p[2]).slice(0, limit).map(b => b.p)
 }
 
+/** A tunnel never digs a block slower than this with the carried tools (obsidian, bedrock). */
+export const TUNNEL_MAX_DIG_MS = 3000
+
 /**
- * Tunnel fallback: a target `minDist` + 2 blocks away at the portal's feet level in the
- * cardinal direction whose straight line holds the most solid, lava-free rock (netherrack
- * digs fast and a 2-high tunnel never crosses an open drop). Null if every line meets lava.
+ * Tunnel fallback: targets `minDist` + 2 blocks away at the portal's feet level, one per
+ * cardinal direction whose straight line is lava-free, loaded, and diggable (no block slower
+ * than TUNNEL_MAX_DIG_MS: the arrival portal's own obsidian frame and its portal blocks lie
+ * on one of these lines; b3-dev1 r05 chose it 14 times). Most solid rock first (netherrack
+ * digs fast and a 2-high tunnel never crosses an open drop). Empty if every line is blocked.
  */
-export function tunnelTarget (view: BlockView, portal: V3, minDist: number): V3 | null {
-  let best: { p: V3; solid: number } | null = null
+export function tunnelTargets (view: BlockView, portal: V3, minDist: number): V3[] {
+  const out: { p: V3; solid: number }[] = []
   for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
     let solid = 0
     let ok = true
-    for (let i = 2; i <= minDist + 2 && ok; i++) {
+    for (let i = 1; i <= minDist + 2 && ok; i++) {
       const x = portal[0] + dx * i
       const z = portal[2] + dz * i
       for (let dy = -1; dy <= 2; dy++) {
-        const k = view.at(x, portal[1] + dy, z).kind
-        if (k === 'lava' || k === 'unknown') ok = false
-        if (k === 'solid') solid++
+        const c = view.at(x, portal[1] + dy, z)
+        if (c.kind === 'lava' || c.kind === 'unknown' || c.name === 'nether_portal') ok = false
+        // The floor row (dy −1) is stood on, not dug.
+        if (dy >= 0 && c.kind === 'solid' && !(c.digMs <= TUNNEL_MAX_DIG_MS)) ok = false
+        if (c.kind === 'solid') solid++
       }
       if (lavaNear(view, [x, portal[1], z], 1) > 0) ok = false
     }
-    if (ok && (!best || solid > best.solid)) best = { p: [portal[0] + dx * (minDist + 2), portal[1], portal[2] + dz * (minDist + 2)], solid }
+    if (ok) out.push({ p: [portal[0] + dx * (minDist + 2), portal[1], portal[2] + dz * (minDist + 2)], solid })
   }
-  return best?.p ?? null
+  return out.sort((a, b) => b.solid - a.solid).map(x => x.p)
+}
+
+/** The best tunnel target (tunnelTargets), or null. */
+export function tunnelTarget (view: BlockView, portal: V3, minDist: number): V3 | null {
+  return tunnelTargets(view, portal, minDist)[0] ?? null
 }
 
 /** Arrival assessment: lava within 3 blocks, safe standable cells within 4, and whether any exist. */

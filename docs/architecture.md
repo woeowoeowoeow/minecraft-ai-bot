@@ -331,7 +331,7 @@ The run ends with outcome `unrecoverable` when L5 is reached. It ends with `deat
 ### 7.4 Death handling
 1. A death bundle is captured (§9), including damage events from the last 60 s.
 2. After respawn, the memory of the death point, what was lost and its dimension is kept.
-3. If the death point is in the Overworld, within 300 blocks, reachable, and less than 4 minutes old (before despawn), the bot runs `recoverItems`. Otherwise it skips that step.
+3. If the death point is in the Overworld, within 300 blocks, reachable, and less than 4 minutes old (before despawn), the bot runs `recoverItems`. Otherwise it skips that step. After a mob death (B round 2, §10D) it also needs high-value items lost, daylight, an uncovered site and at most one melee hostile there.
 4. The planner resumes from the actual inventory. Milestone predicates are state-based, so the lost progress is simply re-planned.
 5. Two deaths with the same signature count as a repeated failure and trigger the gate's `diagnose_failure`.
 
@@ -722,7 +722,7 @@ B adds progression skills, a navigation profile, observer memory and policy data
 **Threats.** Ghast and blaze count as ranged (cover). Wither skeleton, magma cube, hoglin and zoglin count as melee. Piglins count unless the bot wears golden armor. Zombified piglins never count. Surface night (shelter, hunting deferral) exists only in the Overworld.
 
 **Policy** (`planner/policy.ts` `B_REQUIREMENTS`). It is the A list, then B entries gated on `nether_ready` (`when`).
-- After `nether_ready`, A requirements count as met except emergency food and a pickaxe. A cast turns the empty bucket into a lava bucket for a while, and a death may cost armor; neither re-opens the A kit.
+- After `nether_ready`, A requirements count as met except emergency food, a pickaxe and (since B round 2) a stone-tier sword. A cast turns the empty bucket into a lava bucket for a while, and a death may cost armor; neither re-opens the A kit.
 - B entries, in order: flint and steel; a water bucket, a bucket and a usable pool, each only until the portal stands; ≥ 4 food items (bounded); `nether_portal`; `enter_nether`; `nether_excursion`; `return_overworld`.
 - Every A requirement counts as met in the Nether.
 - A death, an interruption or an accidental portal trip re-plans from state.
@@ -736,6 +736,101 @@ B adds progression skills, a navigation profile, observer memory and policy data
 **Evaluator.** Scenario `b` (target `B`, 70-minute default). Ground truth: the `We Need to Go Deeper` advancement, `data get entity Bot Dimension` at the end, and `execute if block` on the reported built-portal cell. The batch report adds a B section (`evaluation/portal-report.ts`): the legs from `nether_ready` to return, strategy usage and success, cast and lava-fetch steps, pool rejections, Nether arrivals, excursions, retreats and deaths. Fixture `bkit` gives the nether_ready inventory but no pool knowledge, for development only.
 
 **Reasoner.** `planner/model.ts` holds the `ModelClient` boundary and `ModelReasoner` (§5.3). No provider adapter is shipped and runtime reasoning is disabled (milestones.md, B note).
+
+## 10D. Milestone B round 2: death cascades and inventory desync (as built, 2026-10-02/03)
+
+Built after B gate 20261002 failed on deaths (1.10/run). Each change targets a measured cause (evaluation.md, B round 2).
+
+**1.16.1 client fixes (`bot/protocol-fixes.ts`, `bot/inventory-sync.ts`, `bot/respawn.ts`).**
+- `installRespawnEffectsReset`: Mineflayer keeps `bot.entity.effects` across a respawn; the vanilla client starts a new player entity with none. A stale Mining Fatigue made every client-side dig wait ~1000 s. All 13 gate wood stalls came from this, in the two runs that met an elder guardian. Event `effects_reset`.
+- `installCursorSync`: the server's cursor slot (`set_slot`, window −1) is applied; Mineflayer dropped it, so the client cursor model went stale.
+- `safeEquip`: every equip is serialized per bot, with at most 3 attempts. A rejected click waits for the server's window resend, then retries. An unanswered click (a container the server closed but the client kept) first resets the windows (`close_window`, then resync). A failure that remains is `STATE_INCONSISTENT key=inventory=rejected`, never an uncaught INFRA. Event `inventory_retry`. `useBucket` waits for the used bucket's slot update before returning. Recovery's L2 resync uses `resetWindows`.
+- `respawnWaiter`: the controller's death flow no longer waits 15 s for a `spawn` event that has already happened, which had left the bot standing at the respawn point with no interrupts.
+
+**Digs.** `acts.dig` refuses a dig predicted to take more than 20 s (`DIG_MAX_MS`), with `PRECONDITION_FAILED key=effect=mining_fatigue` or `dig=slow`. `collect` fails at once under fatigue, so Recovery relocates. It blacklists the target a stalled or timed-out run was working on. Food and log search steps prefer dry ground (`Searcher {dry}`).
+
+**Death recovery (`recovery/death.ts`).** After a mob death, `recoverItems` runs only when all of these hold:
+- the items lost were high-value (iron gear, buckets, flint and steel, obsidian);
+- it is day;
+- the site was not under cover;
+- at most one melee hostile, and no shooter, was within 16 blocks at death.
+
+Event `respawn_plan` records the first objective after each respawn.
+
+**Weak state (`threat.ts weakState`: capacity < 1 or HP ≤ 6).**
+- **Dig in, not flee:** with only melee mobs and none closer than 6 blocks, the P1 action is `cover`. Its melee path seals a 3-deep pocket. If no column is diggable, the cover cooldown turns the response into flee. Creepers, shooters, aquatic mobs and water keep their previous responses.
+- **After a flight:** at night, or with hostiles within 20, `flee` ends with a dig-in.
+- **No resting in the open:** `rest` does not fire with a hostile in sight within 16.
+- **Holding the pocket:** in a sealed pocket a weak bot holds while a hostile is within 12. Holds chain with no gap for up to 240 s; after that, the normal 30 s gap applies.
+- **Shelter window:** the shelter skill's night window equals the scheduler's (12 000–23 300).
+
+**Evaluator.** Before the first run, the seed list goes to `runs/<batch>/private/seeds.json` (evaluator-private). `--resume <batchId>` continues an interrupted batch from it. A run the crash interrupted is not re-run and is scored `infra_error`. The survival report adds death cascades, wood-search stalls and inventory-rejection counts.
+
+## 10E. Milestone B round 3: resource search on poor terrain (as built, 2026-10-04)
+
+Built after B re-gate 20261003 failed (9/20, 1.15 deaths/run). Six of the 11 failed runs never reached nether_ready. Their time went to night shelter (16 119 s over the 20 runs), food hunts (10 582 s, 28 700 blocks), wood (6 211 s, 13 917 blocks) and gravel for flint (3 589 s). B itself is unchanged: every B entry still waits for nether_ready, and the gate is unchanged. Each change targets a measured cause (evaluation.md, B round 3).
+
+**Surface search (`skills/generic/search.ts`).** Logs, food animals and the L2 `relocate` share one order. First, what the client has loaded. Then remembered spots. Then decisive relocation.
+- *Survey.* From the loaded chunks, the surface class (water, tree, green, land) is probed at six distances (24–144) along 16 headings. Chunk loading gives each heading's share of unexplored chunks beyond the loaded radius (176–240). Each heading also has a look-ahead (64–256) that checks regions already searched for the same resource; the region the bot stands in is ignored, because every heading leaves it.
+- *Score.* 2 × resource value − 0.5 × water + 1 × novelty + 0.3 × continuity − 3 × exhausted. A heading whose step just failed is penalised. The choice is deterministic.
+  - Resource value: for wood, tree 1, green 0.5, land 0.25, water 0. For animals, green 1, tree 0.6, land 0.3.
+- *Step.* 96 blocks on the surface, `dry`. Before the step, the area being left is marked searched for that resource: radius 128 for logs (the log scan covers 160), 96 for animals (the server tracks animals within 144). Marks expire after 60 min for logs, 25 min for animals and 10 min for relocate. Events `search_relocation` and `search_region`.
+- The tunnel `Searcher` stays for underground work (mine, lava pool, water).
+
+**Wood (`generic/collect.ts`, observer).**
+- The observer remembers every log in the loaded chunks (up to 160 blocks, every 5 s) as `trees` spots: one per 24-block cluster, at most 24. A spot within 48 blocks whose logs are gone is forgotten. The spots are kept across deaths.
+- `collect log` order:
+  1. targets within 64 blocks;
+  2. any loaded log up to 160 blocks (`loaded_logs`);
+  3. the nearest remembered tree spot 32–1 200 blocks away (`tree_spot`);
+  4. relocation.
+
+  Steps 2 and 3 share 3 visits per run.
+- A failed target blacklists the same-kind blocks within 3 of it: a whole trunk, or a whole gravel bank.
+
+**Gravel and flint (`sources.ts`, `generic/mine.ts`).**
+- Flint is knapped from one carried gravel block. `collect` re-places a carried block and digs it before looking at gravel in the world.
+- That block comes from `mine`. Mining skips targets whose digging would release liquid, so it never takes lake-bed gravel from the water. It reaches buried gravel by excavation. When nothing is in range, it descends and tunnels.
+- An unreachable gravel or sand bank is blacklisted whole.
+- No dedicated underwater acquisition was built. Mined gravel is common underground, and the plan never needs water.
+- Flint and steel is not surface work, so it runs at night.
+
+**Food (`generic/hunt.ts`, observer, `controller/interrupts.ts`).**
+- Animals are remembered as far as the server sends them (144 blocks; it was 32). A remembered spot stays useful for 20 min within 256 blocks (it was 10 min and 160), with up to 4 visits per hunt. The walk to a spot is `dry`, with a budget that grows with distance.
+- Hunt search steps use the relocator for `animals`, so hunted-out areas are avoided.
+- P2 `cook`, ahead of `eat`, fires when all of these hold:
+  - food ≤ 14 and not an emergency;
+  - only raw meat to eat;
+  - the furnace route needs nothing gathered (a furnace or its cobblestone, and fuel);
+  - the Overworld.
+
+  It runs `obtain cooked_food` for up to 4 items. In the gate, 105 raw items were eaten or lost uncooked, 30–40 % of the meat in the food-timeout runs.
+- `forage` reaches 24 blocks (12 before) while cooked plus raw meat is short of 14, so wood and gravel trips pick up food on the way.
+- Crops and hay were not built: only 1 of the ~46 B-phase runs ever picked one up, and bread does not count as cooked food.
+
+**Nights (`controller/schedule.ts`, policy `filler`).**
+- A requirement marked `filler` is never an ordinary candidate. At night, when every candidate is deferred, the first filler that is not itself surface work runs before `shelter`. Event `schedule` `night_filler`.
+- Fillers:
+  - `cook_raw` (A): smelt the carried raw meat.
+  - `pre_gold_armor` (B list, before nether_ready only): the golden helmet, which is mining and furnace work. `b_gold_armor` is then already met after nether_ready.
+- Dusk is back at 12 500 for both the scheduler and the shelter window. Round 2's 12 000 cost about 25 s of daylight per night.
+
+**After smoke 1 (`b3-smoke1` r01).**
+- *Chunks settle before relocating.* Before the first relocation from a place, the relocator waits up to 5 s for the client to load the surrounding chunks, and the caller scans once more. At t = 1 s the bot had marked its spawn area searched for logs while chunks were still arriving. The loaded-log and tree-spot visit budget resets after each relocation, and so does the hunt's spot budget.
+- *Hunts start on the surface or not at all.* A hunt still under cover after `toSurface` fails `NAV_STUCK`, and Recovery retries and relocates. It no longer walks to remembered spots through caves: r01 went from y 29 under a mountain into lava at y 10. `toSurface` climbs to the open sky above the bot (its column's highest collision block + 1), not to y 64. Under a mountain whose surface was at y 79, the y 64 goal had ended `NAV_STUCK`.
+- *Burning.* Mineflayer never sets `entity.onFire`, so the observer reads the shared-flags byte (metadata 0, bit 0x01). P0 `extinguish`: on fire in the Overworld, out of liquid, with a water bucket → pour water at the feet, wait for the fire to go out, scoop the water back. In r01 the bot escaped lava at 8.9 HP and burned to death 15 s later while resting, carrying a water bucket.
+
+**After dev batch 1 (`b3-dev1` r05).**
+- `extinguish` fires only on the ground with no lava within 2.5 blocks (smoke 2 r01).
+- The Nether excursion's tunnel fallback (`nether-plan.ts` `tunnelTargets`) never crosses a block slower than 3 s to dig with the carried tools (the arrival portal's obsidian frame, portal blocks, bedrock). It tries every clear cardinal line, not only the one with the most rock. r05 tunnelled 14× into its own portal frame and terminated.
+
+**Evaluator.** The batch report adds a resource-search section (`evaluation/resource-report.ts`) for A and B batches:
+- time and distance per resource (wood = `collect log`; gravel = `mine` or `collect` of gravel; food = `hunt`);
+- relocations and exhausted regions per resource;
+- remembered-spot visits;
+- raw food lost uncooked and `cook` interrupts;
+- night shelter time and fillers;
+- completion of food_10, flint and steel, and nether_ready.
 
 ## 11. Repository layout
 

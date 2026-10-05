@@ -100,8 +100,13 @@ describe('P1 threats', () => {
     expect(th.action).toBe('flee')
     const r = await rt.run('flee', { targetId: th.primary!.e.id })
     expect(r.status).toBe('success')
+    // Clear of the crowd, or (B round 2) weak with the crowd still about: sealed in a pocket after the flight.
     const me = f.bot.entity.position
-    for (const z of mobs('zombie')) expect(z.position.distanceTo(me)).toBeGreaterThan(9)
+    const sealed = rt.obs.state().body.enclosed === true
+    if (!sealed) for (const z of mobs('zombie')) expect(z.position.distanceTo(me)).toBeGreaterThan(9)
+    const hp = f.bot.health
+    await sleep(5000)
+    expect(f.bot.health).toBeGreaterThanOrEqual(hp)
     await f.cmd('kill @e[type=zombie]')
   }, 120_000)
 })

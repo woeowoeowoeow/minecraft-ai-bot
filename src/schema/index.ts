@@ -140,6 +140,9 @@ export const EventTypeS = z.enum([
   'food_risk',
   // Milestone B: portal construction steps, lava-pool candidates, Nether arrival and excursion.
   'portal', 'lava_search', 'nether',
+  // B round 2: stale client effects dropped on respawn, server-rejected inventory clicks (retried),
+  // the plan chosen after a respawn.
+  'effects_reset', 'inventory_retry', 'respawn_plan', 'search_region', 'search_relocation',
 ])
 export type EventType = z.infer<typeof EventTypeS>
 

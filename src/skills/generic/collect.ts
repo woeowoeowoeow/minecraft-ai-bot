@@ -7,6 +7,8 @@ import { countOf } from '../sources.js'
 import { dig, placeNear, waitFor } from '../acts.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
 import { nextSearchHeading, Searcher, toSurface } from './explore.js'
+import { Relocator } from './search.js'
+import type { V3 } from '../../schema/index.js'
 
 /** Block groups: a group name matches several block names; the dropped item has the block's name. */
 const GROUPS: Record<string, (name: string) => boolean> = {
@@ -36,6 +38,12 @@ function have (s: WorldState, p: P): number {
 }
 
 const MAX_TARGET_FAILURES = 5
+/** A failed target takes its neighbours of the same kind with it (a trunk, a gravel bank): re-gate 20261003 r09 tried 40 blocks of one unreachable bank, 5 per attempt. */
+const CLUSTER_R = 3
+/** Logs: remembered tree spots worth walking to (the nearest first), per run and in all. */
+export const TREE_SPOT = { maxDist: 1200, minDist: 32, perRun: 3, forgetS: 600, range: 10 } as const
+/** Logs anywhere in the loaded chunks (view distance 10: ~160 blocks) are walked to before any search. */
+export const WIDE_LOG_SCAN = 160
 /** Re-placements of a chance-drop block per run (gravel gives flint 10 % of the time). */
 const MAX_REPLACES = 40
 
@@ -59,6 +67,33 @@ export function blockKey (v: { x: number; y: number; z: number }): string {
   return `block:${v.x},${v.y},${v.z}`
 }
 
+/** Blacklist a failed target and the loaded blocks of the same kind within CLUSTER_R of it. */
+export function blacklistCluster (bot: Bot, target: Vec3, matches: (name: string) => boolean, blacklist: (key: string, reason: string) => void, reason: string): number {
+  blacklist(blockKey(target), reason)
+  let n = 1
+  for (let dx = -CLUSTER_R; dx <= CLUSTER_R; dx++) {
+    for (let dy = -CLUSTER_R; dy <= CLUSTER_R; dy++) {
+      for (let dz = -CLUSTER_R; dz <= CLUSTER_R; dz++) {
+        if (!dx && !dy && !dz) continue
+        const v = target.offset(dx, dy, dz)
+        const b = bot.blockAt(v, false)
+        if (b && matches(b.name)) { blacklist(blockKey(v), `${reason}_cluster`); n++ }
+      }
+    }
+  }
+  return n
+}
+
+/** Nearest remembered tree spot worth walking to (same dimension, not just visited, within TREE_SPOT.maxDist). */
+export function treeSpot (s: WorldState, isBlacklisted: (k: string) => boolean): V3 | null {
+  const spots = s.memory.locations
+    .filter(l => l.kind === 'trees' && l.dim === s.dim && !isBlacklisted(`trees:${l.pos[0]},${l.pos[2]}`))
+    .map(l => ({ l, d: Math.hypot(l.pos[0] - s.pos[0], l.pos[2] - s.pos[2]) }))
+    .filter(x => x.d >= TREE_SPOT.minDist && x.d <= TREE_SPOT.maxDist)
+    .sort((a, b) => a.d - b.d)
+  return spots[0]?.l.pos ?? null
+}
+
 /**
  * Goal-shaped collect: ensure inventory has ≥ count of the block's drop (or of
  * `item`). Finds the nearest target in loaded chunks, navigates within reach,
@@ -79,21 +114,37 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
     let targetsTried = 0
     let targetFailures = 0
     let replaced = 0
-    const search = new Searcher(p.block)
+    const isLog = p.block === 'log'
+    // Logs: remembered trees, then decisive relocation into new terrain (search.ts). Other
+    // surface blocks keep the plain search steps.
+    const search = isLog ? new Relocator('log') : new Searcher(p.block)
+    let spotVisits = 0
+    // A target the watchdog aborts on (stalled or timed out mid-dig or mid-pickup) is never chosen
+    // again by the retry: B gate 20261002 part2-r01 went back to one log 12 times.
+    let current: Vec3 | null = null
+    const onAbort = () => {
+      const why = (ctx.signal.reason as { why?: string } | undefined)?.why
+      if (current && (why === 'stalled' || why === 'timeout')) ctx.env.blacklist(blockKey(current), `collect_${why}`)
+    }
+    ctx.signal.addEventListener('abort', onAbort, { once: true })
     // Trees grow on the surface: leave the mine first.
     if (p.block === 'log' && ctx.state().body.covered && !candidates(bot, p, k => ctx.env.isBlacklisted(k)).some(v => Math.abs(v.y - bot.entity.position.y) < 4)) await toSurface(ctx)
 
     while (have(ctx.state(), p) < p.count) {
       ctx.checkAbort()
       const list = candidates(bot, p, k => ctx.env.isBlacklisted(k))
-      if (list.length === 0 || (p.chance && list[0]!.distanceTo(bot.entity.position) > 8 && (ctx.state().inventory[p.block] ?? 0) > 0)) {
+      // Chance drops (flint): a carried gravel block is re-placed and dug where the bot stands,
+      // before any gravel in the world (re-gate 20261003 r05: lake-bed gravel dug from the
+      // water trapped the bot; 18 stalls and 21 unreachable targets across the gate).
+      if (list.length === 0 || (p.chance && (ctx.state().inventory[p.block] ?? 0) > 0)) {
         // Chance drops: re-place the block item beside the bot and dig it again.
         if (p.chance && (ctx.state().inventory[p.block] ?? 0) > 0 && replaced < MAX_REPLACES) {
           try {
             const at = await placeNear(bot, p.block, ctx.signal)
             replaced++
             await sleep(400) // gravel may fall a block
-            const fallen = bot.findBlocks({ matching: bot.registry.blocksByName[p.block]!.id, maxDistance: 5, count: 1 })[0] ?? at
+            // The placed block, or where it fell (never some other block of its kind nearby).
+            const fallen = [0, 1, 2, 3, 4].map(dy => at.offset(0, -dy, 0)).find(v => bot.blockAt(v, false)?.name === p.block) ?? at
             const b = bot.blockAt(fallen, false)
             if (b && b.name === p.block) {
               const before = have(ctx.state(), p)
@@ -108,20 +159,50 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
           }
         }
         if (list.length === 0) {
+          // Logs beyond the normal target range but loaded: walk over first (the area is not treeless).
+          const far = isLog && spotVisits < TREE_SPOT.perRun ? candidates(bot, { ...p, maxDist: WIDE_LOG_SCAN }, k => ctx.env.isBlacklisted(k))[0] : undefined
+          if (far) {
+            spotVisits++
+            const from = ctx.state().pos
+            ctx.log('search_step', { n: 0, for: p.block, from: from.map(Math.round), target: [far.x, far.y, far.z], mode: 'loaded_logs', dist: Math.round(far.distanceTo(bot.entity.position)) })
+            const r = await ctx.nav.goto({ kind: 'xz', target: [far.x, far.y, far.z], range: 8, dry: true })
+            if (!r.ok) {
+              if (r.class === 'CANCELLED') ctx.checkAbort()
+              blacklistCluster(bot, far, blockMatcher(p.block), (k, why) => ctx.env.blacklist(k, why), r.class)
+            } else ctx.progress('loaded_logs', spotVisits)
+            continue
+          }
+          // Trees seen earlier (loaded chunks, up to 160 blocks; kept across deaths): go back
+          // there before searching new ground (re-gate 20261003 r12: re-searched after a death).
+          const spot = isLog && spotVisits < TREE_SPOT.perRun ? treeSpot(ctx.state(), k => ctx.env.isBlacklisted(k)) : null
+          if (spot) {
+            spotVisits++
+            ctx.env.blacklist(`trees:${spot[0]},${spot[2]}`, 'visited', TREE_SPOT.forgetS)
+            const from = ctx.state().pos
+            ctx.log('search_step', { n: 0, for: p.block, from: from.map(Math.round), target: spot, mode: 'tree_spot', dist: Math.round(Math.hypot(spot[0] - from[0], spot[2] - from[2])) })
+            const r = await ctx.nav.goto({ kind: 'xz', target: spot, range: TREE_SPOT.range, dry: true })
+            if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
+            if (r.ok) ctx.progress('tree_spot', spotVisits)
+            continue
+          }
           if (search.steps >= p.searchSteps) {
             throw new SkillFailure(search.steps > 0 ? 'SEARCH_EXHAUSTED' : 'NOT_FOUND', `no reachable ${p.block} within ${p.maxDist} blocks after ${search.steps} search steps`, { key: `target=${p.block}`, searchSteps: search.steps, targetsTried })
           }
+          if (search instanceof Relocator && await search.settle(ctx)) continue
           await search.step(ctx)
+          // A new area: loaded logs and remembered trees may be visited again.
+          spotVisits = 0
           continue
         }
       }
       const target = list[0]!
+      current = target
       targetsTried++
       const r = await ctx.nav.goto({ kind: 'reach', target: [target.x, target.y, target.z], range: 4.5 })
       if (!r.ok) {
         targetFailures++
-        ctx.env.blacklist(blockKey(target), r.class)
-        ctx.localRecovery(`blacklist target after ${r.class}`)
+        const n = blacklistCluster(bot, target, blockMatcher(p.block), (k, why) => ctx.env.blacklist(k, why), r.class)
+        ctx.localRecovery(`blacklist target (+${n - 1} beside it) after ${r.class}`)
         if (targetFailures >= MAX_TARGET_FAILURES) {
           throw new SkillFailure(r.class === 'CANCELLED' ? 'STATE_INCONSISTENT' : r.class, `${targetFailures} targets failed to reach; last ${r.class}`, { key: `target=${p.block}`, lastNav: r.detail, targetsTried, searchTarget: true }, r.detail.missing)
         }
@@ -142,6 +223,8 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
         await dig(bot, block, ctx.signal)
       } catch (e) {
         ctx.checkAbort()
+        // Every block is equally slow under Mining Fatigue: leave the area instead (Recovery relocates).
+        if (e instanceof SkillFailure && e.detail.key === 'effect=mining_fatigue') throw e
         targetFailures++
         ctx.env.blacklist(blockKey(target), 'dig_failed')
         ctx.localRecovery(`dig failed: ${(e as Error).message}`)

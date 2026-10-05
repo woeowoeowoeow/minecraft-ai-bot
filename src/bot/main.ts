@@ -7,7 +7,8 @@ import * as mfNs from 'mineflayer'
 import { Controller, type ControllerResult } from '../controller/controller.js'
 import { ProgressionController } from '../controller/progression.js'
 import { A_FLAGS, B_FLAGS, builtPortal } from '../planner/milestones.js'
-import { resyncInventory } from '../skills/generic/craft.js'
+import { onInventoryRetry, resetWindows } from './inventory-sync.js'
+import { respawnWaiter } from './respawn.js'
 import { runNavBench } from '../controller/navbench.js'
 import { loadPathfinder, PathfinderNavigator } from '../nav/pathfinder.js'
 import { EventBus } from '../observer/events.js'
@@ -21,7 +22,7 @@ import type { SkillEnv } from '../skills/types.js'
 import { Telemetry } from '../telemetry/telemetry.js'
 import { voxelSlice } from '../telemetry/voxels.js'
 import { MC_VERSION } from '../version.js'
-import { installDigAck, installRaycastGuard } from './protocol-fixes.js'
+import { installCursorSync, installDigAck, installRaycastGuard, installRespawnEffectsReset } from './protocol-fixes.js'
 import { startStallWatch } from './stall-watch.js'
 import { join } from 'node:path'
 import { mulberry32 } from './rng.js'
@@ -44,6 +45,10 @@ async function main (): Promise<void> {
   const bot = mineflayer.createBot({ host: cfg.host, port: cfg.port, username: cfg.username, version: MC_VERSION, auth: 'offline', checkTimeoutInterval: 60_000 })
   const bus = new EventBus(Date.now, () => Number(bot.time?.age ?? 0))
   installDigAck(bot, c => bus.emit('dig_ack_correction', c, 'warn'))
+  installRespawnEffectsReset(bot, cleared => bus.emit('effects_reset', { cleared }, 'info'))
+  installCursorSync(bot)
+  const respawn = respawnWaiter(bot)
+  onInventoryRetry(bot, r => bus.emit('inventory_retry', r, 'warn'))
   let rayTrips = 0
   installRaycastGuard(why => { if (rayTrips++ < 20) bus.emit('error', { message: `raycast guard: ${why}` }, 'warn') })
   startStallWatch(join(cfg.runDir, 'stalls.jsonl'))
@@ -172,7 +177,7 @@ async function main (): Promise<void> {
     navbench = await runNavBench({
       bot, runner, bus, telemetry, random, deadline, stopped: () => stopRequested,
       deaths: () => obs.counters.deaths,
-      waitForRespawn: async () => { await withTimeout(once(bot, 'spawn'), 15_000, 'respawn').catch(() => {}); await new Promise(r => setTimeout(r, 1000)) },
+      waitForRespawn: async () => { await respawn.wait(15_000, 1000) },
     })
     const ok = navbench.filter(t => t.ok).length
     return void finish({ outcome: 'goal_reached', reason: `navbench ${ok}/${navbench.length} trials ok`, terminalFailure: null }, EXIT.ok)
@@ -183,8 +188,8 @@ async function main (): Promise<void> {
       runner, bus, telemetry,
       state: () => obs.state(), setObjective: o => obs.setObjective(o),
       requirements: cfg.scenario === 'b' ? B_REQUIREMENTS : A_REQUIREMENTS, milestones: milestoneDefs, flags: flagDefs, target: cfg.scenario === 'b' ? 'B' : 'A', deadline,
-      waitForRespawn: async () => { await withTimeout(once(bot, 'spawn'), 15_000, 'respawn').catch(() => {}); await new Promise(r => setTimeout(r, 1500)) },
-      resync: async () => { try { if (bot.currentWindow) bot.closeWindow(bot.currentWindow) } catch { /* ignore */ } await resyncInventory(bot) },
+      waitForRespawn: async () => { await respawn.wait(15_000, 500) },
+      resync: async () => { await resetWindows(bot) },
       afterDeath: () => { nav.stop(); obs.afterDeath() },
     })
     let pr: ControllerResult
@@ -203,7 +208,7 @@ async function main (): Promise<void> {
     runner, reasoner: makeReasoner(cfg.reasoner, script), bus, telemetry,
     state: () => obs.state(), digest: () => obs.digest(), setObjective: o => obs.setObjective(o),
     requirements: M0_REQUIREMENTS, milestones: MILESTONES, target: 'M0', deadline,
-    waitForRespawn: async () => { await withTimeout(once(bot, 'spawn'), 15_000, 'respawn').catch(() => {}) },
+    waitForRespawn: async () => { await respawn.wait(15_000, 0) },
   })
   let r: ControllerResult
   try {

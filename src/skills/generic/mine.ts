@@ -14,7 +14,7 @@ import { UNDERGROUND } from '../../version.js'
 import { dig } from '../acts.js'
 import { countOf } from '../sources.js'
 import { SkillFailure, type Precondition, type SkillCtx, type SkillDef } from '../types.js'
-import { blockKey, pickup } from './collect.js'
+import { blacklistCluster, blockKey, pickup } from './collect.js'
 import { Searcher } from './explore.js'
 
 const Params = z.object({
@@ -30,6 +30,8 @@ const PICKS = ['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_picka
 const MAX_TARGET_FAILURES = 6
 /** Descend this far at a time when no target is in range. */
 const DESCEND = 8
+/** Blocks found in banks (cluster blacklisting on an unreachable target). */
+const BANKS = new Set(['gravel', 'sand'])
 
 /** Cheapest pickaxe that makes `block` drop, or null if any tool (or the hand) does. */
 export function pickaxeFor (bot: Bot, block: string): string | null {
@@ -144,8 +146,12 @@ export const mine: SkillDef<P, { mined: number; targets: number; descents: numbe
         if (!r.ok) {
           if (r.class === 'MISSING_RESOURCE') throw new SkillFailure('MISSING_RESOURCE', r.detail.reason ?? 'no pickaxe', { key: 'tool=pickaxe' }, r.detail.missing)
           failures++
-          ctx.env.blacklist(blockKey(c.v), r.class)
-          ctx.localRecovery(`blacklist ${p.blocks[0]} after ${r.class}`)
+          // Gravel lies in banks: an unreachable one is left whole (re-gate 20261003 r09: 40 blocks
+          // of one bank tried five at a time). Ores keep per-block blacklisting.
+          let n = 1
+          if (BANKS.has(bot.blockAt(c.v, false)?.name ?? '')) n = blacklistCluster(bot, c.v, name => BANKS.has(name), (k, why) => ctx.env.blacklist(k, why), r.class)
+          else ctx.env.blacklist(blockKey(c.v), r.class)
+          ctx.localRecovery(`blacklist ${p.blocks[0]}${n > 1 ? ` (+${n - 1} beside it)` : ''} after ${r.class}`)
           if (failures >= MAX_TARGET_FAILURES) throw new SkillFailure(r.class === 'CANCELLED' ? 'STATE_INCONSISTENT' : r.class, `${failures} targets failed; last ${r.detail.reason ?? r.class}`, { key: `target=${p.blocks[0]}`, nav: r.detail })
           continue
         }

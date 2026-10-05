@@ -19,7 +19,7 @@ export type EntityInfo = {
 }
 export type Hazard = { kind: 'lava' | 'fire' | 'void' | 'water'; pos: V3; dist: number }
 
-export type LocationKind = 'spawn' | 'bed' | 'crafting_table' | 'furnace' | 'chest' | 'lava_pool' | 'village' | 'death' | 'mine_entry' | 'ruined_portal' | 'animals' | 'portal_ow' | 'portal_nether' | 'portal_site'
+export type LocationKind = 'spawn' | 'bed' | 'crafting_table' | 'furnace' | 'chest' | 'lava_pool' | 'village' | 'death' | 'mine_entry' | 'ruined_portal' | 'animals' | 'portal_ow' | 'portal_nether' | 'portal_site' | 'trees'
 export type Location = {
   kind: LocationKind; dim: Dim; pos: V3; confidence: number; source: 'observed' | 'built'; lastSeen: number
   /** Kind-specific facts, e.g. a lava pool's source-block count. */
@@ -33,6 +33,9 @@ export type Location = {
  */
 export type Transition = { from: Dim; to: Dim; t: number; fromPos: V3; toPos: V3; cause: 'portal' | 'death' }
 
+/** An area searched for a resource without result (search.ts): the next relocation avoids it until it expires. */
+export type SearchedRegion = { kind: string; dim: Dim; pos: V3; r: number; t: number }
+
 export type WorldMemory = {
   locations: Location[]
   explored: Record<Dim, Set<string>>
@@ -41,6 +44,8 @@ export type WorldMemory = {
   transitions: Transition[]
   /** Nether excursions: farthest horizontal distance from the arrival portal during a visit (milestone B). */
   excursions: { t: number; dist: number; portal: V3 }[]
+  /** Regions searched per resource without result (B round 3). Optional: older snapshots and fixtures lack it. */
+  searched?: SearchedRegion[]
 }
 
 /** Architecture §8.1 — M0 subset (no recovery state yet). */

@@ -159,6 +159,8 @@ export const CREEPER = { swellRange: 3, fuseMs: 1500, defuseRange: 7 } as const
 
 /** 1.16.1 entity metadata indices (protocol 736) that Mineflayer does not name. */
 export const METADATA = {
+  /** Entity: shared flags byte (0x01 on fire). */
+  sharedFlags: 0,
   /** AgeableMob: is_baby (boolean). */
   ageableBaby: 15,
   /** Creeper: swell direction (−1 idle, 1 swelling). */

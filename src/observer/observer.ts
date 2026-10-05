@@ -21,7 +21,15 @@ export const LAVA_POOL_MIN_SOURCES = 10
 const NOT_COVER = /leaves|log|wood|mushroom_block|vine|bamboo/
 /** Food-animal sightings within this distance of a remembered spot refresh it. */
 const ANIMAL_CLUSTER = 24
-const MAX_ANIMAL_SPOTS = 12
+const MAX_ANIMAL_SPOTS = 24
+/**
+ * Food animals are remembered as far as the server sends them: a 1.16.1 server tracks
+ * animals within (view distance − 1) × 16 = 144 blocks at view distance 10. The old 32-block
+ * limit ignored most animals the client could see (re-gate 20261003: 56 fruitless hunts).
+ */
+export const ANIMAL_SEEN_MAX = 144
+/** Logs in loaded chunks are remembered as tree spots (B round 3: respawned bots re-searched for wood they had seen). */
+export const TREES = { scanR: 160, cluster: 24, maxSpots: 24, perScan: 64, forgetWithin: 48, emptyR: 16 } as const
 
 export function toV3 (v: { x: number; y: number; z: number }): V3 {
   return [v.x, v.y, v.z]
@@ -43,6 +51,7 @@ export class Observer {
     deaths: [],
     transitions: [],
     excursions: [],
+    searched: [],
   }
 
   readonly control: WorldState['control'] = { skillStack: [] }
@@ -135,6 +144,7 @@ export class Observer {
     // item_delta coalesced per 5 s (architecture §9)
     this.timers.push(setInterval(() => this.flushItemDelta(), 5000))
     this.timers.push(setInterval(() => { try { this.scanLavaPools() } catch { /* world not ready */ } }, 5000))
+    this.timers.push(setInterval(() => { try { this.scanTrees() } catch { /* world not ready */ } }, 5000))
     bot.inventory.on('updateSlot', () => this.trackInventory())
   }
 
@@ -250,6 +260,36 @@ export class Observer {
     this.memory.locations.push({ kind: 'animals', dim, pos: pos.map(Math.floor) as V3, confidence: 1, source: 'observed', lastSeen: now, detail: { seen: 1 } })
   }
 
+  /**
+   * Logs in the loaded chunks (up to 160 blocks) are remembered as tree spots, one per
+   * 24-block cluster, so wood is found again after a death or a long trip without a new
+   * search. A spot near the bot whose logs are gone is forgotten. Overworld only.
+   */
+  scanTrees (): void {
+    if (this.dim() !== 'overworld') return
+    const ids = logBlockNames(this.bot).map(n => this.bot.registry.blocksByName[n]?.id).filter((x): x is number => x !== undefined)
+    const found = this.bot.findBlocks({ matching: ids, maxDistance: TREES.scanR, count: TREES.perScan }).map(v => [v.x, v.y, v.z] as V3)
+    const now = this.bus.now()
+    for (const c of clusterPoints(found, TREES.cluster)) this.rememberSpot('trees', c.pos, now, TREES.cluster, TREES.maxSpots, { logs: c.n })
+    const me = this.bot.entity.position
+    for (const l of this.memory.locations.filter(x => x.kind === 'trees' && x.dim === 'overworld' && Math.hypot(x.pos[0] - me.x, x.pos[2] - me.z) <= TREES.forgetWithin)) {
+      if (!this.bot.findBlocks({ matching: ids, maxDistance: TREES.emptyR, count: 1, point: new Vec3(...l.pos) }).length) this.forget('trees', l.pos, 1)
+    }
+  }
+
+  /** One remembered spot per cluster: refreshed when seen again, oldest dropped at the cap. */
+  private rememberSpot (kind: Location['kind'], pos: V3, now: number, cluster: number, max: number, detail: Record<string, number>): void {
+    const dim = this.dim()
+    const near = this.memory.locations.find(l => l.kind === kind && l.dim === dim && Math.hypot(l.pos[0] - pos[0], l.pos[2] - pos[2]) < cluster)
+    if (near) { near.lastSeen = now; near.detail = { ...(near.detail ?? {}), ...detail }; return }
+    const spots = this.memory.locations.filter(l => l.kind === kind)
+    if (spots.length >= max) {
+      const oldest = spots.sort((a, b) => a.lastSeen - b.lastSeen)[0]!
+      this.memory.locations = this.memory.locations.filter(l => l !== oldest)
+    }
+    this.memory.locations.push({ kind, dim, pos: pos.map(Math.floor) as V3, confidence: 1, source: 'observed', lastSeen: now, detail })
+  }
+
   forget (kind: Location['kind'], pos: V3, radius = 2): void {
     this.memory.locations = this.memory.locations.filter(l => !(l.kind === kind && Math.hypot(l.pos[0] - pos[0], l.pos[1] - pos[1], l.pos[2] - pos[2]) <= radius))
   }
@@ -341,7 +381,10 @@ export class Observer {
     for (const e of Object.values(this.bot.entities) as Entity[]) {
       if (e === this.bot.entity || !e.position) continue
       const d = e.position.distanceTo(me)
-      if (d > 32) continue
+      if (d > 32) {
+        if (d <= ANIMAL_SEEN_MAX && isFoodAnimal(e)) this.rememberAnimal(toV3(e.position), now)
+        continue
+      }
       if (!this.seenAt.has(e.id)) this.seenAt.set(e.id, now)
       const kind = entityKind(e)
       const info: EntityInfo = { id: e.id, name: e.name ?? e.type, kind, pos: toV3(e.position).map(v => Math.round(v * 10) / 10) as V3, dist: Math.round(d * 10) / 10, ageS: Math.round((now - this.seenAt.get(e.id)!) * 10) / 10 }
@@ -441,7 +484,8 @@ export class Observer {
         saturation: bot.foodSaturation,
         air: ownAir(bot),
         effects: Object.values(e.effects ?? {}).map(ef => bot.registry.effects?.[(ef as { id: number }).id]?.name ?? String((ef as { id: number }).id)),
-        onFire: Boolean((e as Entity & { onFire?: boolean }).onFire),
+        // Mineflayer never sets entity.onFire: the shared flags byte carries it (bit 0x01).
+        onFire: (Number(((e as unknown as { metadata?: unknown[] }).metadata ?? [])[METADATA.sharedFlags] ?? 0) & 0x01) !== 0,
         timeOfDay: bot.time?.timeOfDay ?? 0,
         isRaining: bot.isRaining,
       },
@@ -494,6 +538,24 @@ export function entityKind (e: { type?: string; name?: string; kind?: string }):
 }
 
 function round1 (v: number): number { return Math.round(v * 10) / 10 }
+
+/** An adult land food animal (fish are never remembered: their sightings lead into open water). */
+function isFoodAnimal (e: Entity): boolean {
+  const name = e.name ?? ''
+  return Boolean(FOOD_ANIMALS[name]) && !FISH.has(name) && entityKind(e) === 'passive' &&
+    ((e as unknown as { metadata?: unknown[] }).metadata ?? [])[METADATA.ageableBaby] !== true
+}
+
+/** Greedy clustering (pure): each point joins the first cluster centre within `r`, else starts one. Centres keep the first point. */
+export function clusterPoints (pts: V3[], r: number): { pos: V3; n: number }[] {
+  const out: { pos: V3; n: number }[] = []
+  for (const p of pts) {
+    const c = out.find(x => Math.hypot(x.pos[0] - p[0], x.pos[2] - p[2]) < r)
+    if (c) c.n++
+    else out.push({ pos: p, n: 1 })
+  }
+  return out
+}
 
 function safeCall<T> (fn: () => T): T | null {
   try { return fn() } catch { return null }

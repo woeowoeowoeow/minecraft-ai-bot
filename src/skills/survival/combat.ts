@@ -8,7 +8,8 @@ import { CREEPER, MOB_THREATS, WEAPONS } from '../../version.js'
 import { equipItem } from '../acts.js'
 import { sleep } from '../runner.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
-import { assessThreat, bestWeapon, CREEPER_SPACING, hasShield, RANGED_MELEE_DIST, RETREAT_HP } from './threat.js'
+import { assessThreat, bestWeapon, CREEPER_SPACING, hasShield, isNight, RANGED_MELEE_DIST, RETREAT_HP, weakState } from './threat.js'
+import { digIn } from './cover.js'
 import { atWater, isAquatic, waterCellsNear } from './aquatic.js'
 
 const Params = z.object({ targetId: z.number().int().optional() })
@@ -204,7 +205,16 @@ export const flee: SkillDef<P, { dist: number }> = {
       const after = assessThreat(ctx.state())
       // A creeper only has to be beyond its defuse range and not swelling; anything else beyond 10.
       const near = after.mobs.filter(m => m.e.name === 'creeper' ? m.e.dist <= CREEPER.defuseRange || m.e.swelling : m.e.dist <= 10)
-      if (!near.length) return { dist: Math.min(...after.mobs.map(m => m.e.dist), 99) }
+      if (!near.length) {
+        // Safe for now, but weak: stay safe (seal a pocket) rather than walk back out at night or
+        // with the mobs still about (B gate 20261002 r11: rested at 4 HP with the zombie at 9.7 blocks).
+        const st2 = ctx.state()
+        if (weakState(st2) && st2.inLiquid === 'none' && !st2.body.enclosed && (isNight(st2) || st2.nearby.entities.some(e => e.kind === 'hostile' && e.dist < 20))) {
+          const d = await digIn(ctx, 1)
+          ctx.log('cover', { ok: d.ok, method: 'dig_in', why: d.reason, capped: d.capped, step: true, after: 'flee' })
+        }
+        return { dist: Math.min(...after.mobs.map(m => m.e.dist), 99) }
+      }
     }
     throw new SkillFailure('COMBAT_DANGER', 'threat still close after fleeing', { key: `target=${assessThreat(ctx.state()).primary?.e.name ?? '?'}` })
   },

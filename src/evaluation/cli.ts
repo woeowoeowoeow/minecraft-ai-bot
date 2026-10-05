@@ -2,6 +2,7 @@
 // npm run navbench -- --n 5 [--fixture kit]
 // npm run eval -- --scenario a --n 20 (milestone A: 45 min limit, reasoner none)
 // npm run eval -- --scenario b --n 20 (milestone B: 70 min limit, reasoner none) [--fixture bkit for development]
+// npm run eval -- --resume <batchId> (continue an interrupted batch from its private seed manifest)
 // npm run inspect -- run <runId> | batch <batchId>
 import { existsSync } from 'node:fs'
 import { parseArgs } from 'node:util'
@@ -39,6 +40,7 @@ async function main (): Promise<void> {
       label: { type: 'string' },
       fixture: { type: 'string' },
       set: { type: 'string', default: 'heldout' },
+      resume: { type: 'string' },
     },
   })
   const scenario = ScenarioS.parse(values.scenario)
@@ -53,6 +55,7 @@ async function main (): Promise<void> {
     replay: values.replay?.split(','),
     keepWorld: values['keep-world'],
     label: values.label,
+    resume: values.resume,
     fixture: values.fixture === undefined ? undefined : values.fixture in FIXTURES ? values.fixture as FixtureName : (() => { throw new Error(`unknown fixture ${values.fixture}`) })(),
   })
   console.log('\n' + inspectBatch(batchId))

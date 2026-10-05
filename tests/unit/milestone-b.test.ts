@@ -5,7 +5,7 @@ import type { Location, Transition, WorldState } from '../../src/observer/types.
 import { B_FLAGS, builtPortal, excursionDone, inNetherViaBuilt, milestoneB, returnOk } from '../../src/planner/milestones.js'
 import { aDone, B_REQUIREMENTS, candidateObjectives } from '../../src/planner/policy.js'
 import { Recovery } from '../../src/recovery/ladder.js'
-import { arrivalHazards, excursionTargets, safeStand, tunnelTarget } from '../../src/skills/progression/nether-plan.js'
+import { arrivalHazards, excursionTargets, safeStand, tunnelTarget, tunnelTargets } from '../../src/skills/progression/nether-plan.js'
 import { portalStrategies } from '../../src/skills/progression/portal.js'
 import type { Objective } from '../../src/schema/index.js'
 import { fakeState } from './helpers.js'
@@ -53,7 +53,8 @@ describe('milestone B predicates (bot memory + client dimension)', () => {
 })
 
 describe('milestone B policy', () => {
-  const kit = { iron_pickaxe: 1, flint_and_steel: 1, water_bucket: 1, bucket: 1, cooked_beef: 10 }
+  // nether_ready always includes an iron sword (the stone_sword requirement stays met).
+  const kit = { iron_pickaxe: 1, iron_sword: 1, flint_and_steel: 1, water_bucket: 1, bucket: 1, cooked_beef: 10 }
   const pool: Location = { kind: 'lava_pool', dim: 'overworld', pos: [30, 11, 30], confidence: 1, source: 'observed', lastSeen: 1, detail: { sources: 20, open: 5 } }
   const ids = (s: WorldState) => candidateObjectives(B_REQUIREMENTS, s).map(o => o.id)
   it('B work waits for nether_ready', () => {
@@ -72,6 +73,10 @@ describe('milestone B policy', () => {
     expect(ids(s)).not.toContain('food')
     const s2 = stateWith({ inventory: { ...kit, golden_helmet: 1, bucket: 0, lava_bucket: 1 }, locations: [pool, built], A: 1000 })
     expect(ids(s2)[0]).toBe('enter_nether')
+  })
+  it('a death in B work restores a stone sword before the portal kit (B gate 20261002: bare-handed B deaths)', () => {
+    const s = stateWith({ inventory: { stone_pickaxe: 1, wooden_pickaxe: 1, cobblestone: 8, stick: 2 }, locations: [pool], A: 1000 })
+    expect(ids(s)[0]).toBe('stone_sword')
   })
   it('a rejected pool makes the lava search come back', () => {
     const bad = { ...pool, detail: { ...pool.detail, unusable: true } }
@@ -117,6 +122,14 @@ describe('Nether movement planning', () => {
     const t = tunnelTarget(mapView(solid), [0, 70, 0], 12)
     expect(t).not.toBeNull()
     expect(t![0]).toBeGreaterThanOrEqual(0)
+  })
+  it('tunnel fallback never runs through the portal frame (obsidian), and offers every clear line (b3-dev1 r05)', () => {
+    // A portal along x at the origin: obsidian frame cells and portal blocks east of it.
+    const frame = (x: number, y: number, z: number) => (z === 0 && x >= 1 && x <= 3 && y >= 70 && y <= 72 ? (x === 3 ? 'obsidian' : 'nether_portal') : 'netherrack')
+    const v = mapView(frame, {}, n => (n === 'obsidian' ? 250_000 : n === 'bedrock' ? Infinity : 400))
+    const ts = tunnelTargets(v, [0, 70, 0], 12)
+    expect(ts.length).toBe(3)
+    expect(ts.some(t => t[0] > 0 && t[2] === 0)).toBe(false)
   })
   it('arrival hazards count lava and safe cells', () => {
     expect(arrivalHazards(v, [0, 70, 0]).safe).toBe(true)

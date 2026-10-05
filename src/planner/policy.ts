@@ -3,7 +3,7 @@ import type { WorldState } from '../observer/types.js'
 import type { Objective } from '../schema/index.js'
 import { GOLDEN_ARMOR, toolTier } from '../version.js'
 import { builtPortal, cookedCount, excursionDone, ironArmorPieces, lavaPoolKnown, milestoneB, netherReady, returnOk } from './milestones.js'
-import { EMERGENCY, foodItems, hasEmergencyFood } from '../skills/food.js'
+import { cookableRaw, EMERGENCY, foodItems, hasEmergencyFood } from '../skills/food.js'
 import { countOf } from '../skills/sources.js'
 
 /**
@@ -25,6 +25,12 @@ export type RequirementDef = {
   when? (s: WorldState): boolean
   /** Recovery never relocates for this objective (Nether work: a search walk there is the danger). */
   noRelocate?: boolean
+  /**
+   * Night work only: never offered by day or ahead of other work. The schedule runs it when
+   * every other candidate is deferred at night, instead of sheltering (B round 3: the first
+   * night of nearly every re-gate run sheltered ~480 s with only the food hunt left).
+   */
+  filler?: boolean
   met (s: WorldState): boolean
   objective (s: WorldState): Omit<Objective, 'id' | 'milestone'>
 }
@@ -77,9 +83,10 @@ export const MILESTONES: Record<string, (s: WorldState) => boolean> = {
  * order. The first entry is the default objective; the reasoner may only pick
  * among these.
  */
-export function unmetObjectives (list: RequirementDef[], s: WorldState): Objective[] {
+export function unmetObjectives (list: RequirementDef[], s: WorldState, opts: { fillers?: boolean } = {}): Objective[] {
   const met = new Set(list.filter(r => r.met(s)).map(r => r.id))
   return list
+    .filter(r => Boolean(r.filler) === Boolean(opts.fillers))
     .filter(r => !met.has(r.id) && (r.requires ?? []).every(id => met.has(id)) && (r.when?.(s) ?? true))
     .map(r => ({ id: r.id, milestone: r.milestone, ...r.objective(s) }))
 }
@@ -183,6 +190,8 @@ export const A_REQUIREMENTS: RequirementDef[] = [
   { id: 'water_bucket', milestone: 'A', requires: ['iron_ingots'], desc: `a water bucket (or ≥ ${A.obsidian} obsidian)`, met: s => n(s, 'water_bucket') >= 1 || n(s, 'obsidian') >= A.obsidian, objective: () => obtainObj('water_bucket', 1, 8) },
   { id: 'flint_and_steel', milestone: 'A', requires: ['iron_ingots'], desc: 'flint and steel', met: s => n(s, 'flint_and_steel') >= 1, objective: () => obtainObj('flint_and_steel', 1, 8) },
   { id: 'lava_pool', milestone: 'A', requires: ['stone_pickaxe'], desc: `a known lava pool (≥ ${A.lavaPoolMinSources} sources) or ≥ ${A.obsidian} obsidian`, met: s => lavaPoolKnown(s) || n(s, 'obsidian') >= A.obsidian, objective: () => ({ skill: 'findLavaPool', params: {}, strategy: 'excavate_to_lava_level', budgetMs: 10 * 60_000 }) },
+  // Night filler: cook the raw meat already carried (furnace work, no surface trip).
+  { id: 'cook_raw', milestone: 'A', filler: true, bounded: true, persistent: true, desc: `no raw meat left to cook, or ≥ ${A.cookedFoodTarget} cooked food`, met: s => cookableRaw(s.inventory) === 0 || cookedCount(s.inventory) >= A.cookedFoodTarget, objective: s => ({ ...obtainObj('cooked_food', Math.min(A.cookedFoodTarget, cookedCount(s.inventory) + cookableRaw(s.inventory)), 3), strategy: 'cook_carried' }) },
 ]
 
 /**
@@ -217,6 +226,11 @@ export function candidateObjectives (list: RequirementDef[], s: WorldState, susp
   return unmetObjectives(list, s).filter(o => !suspended(o.id))
 }
 
+/** Night fillers (RequirementDef.filler) that are unmet and offerable, in list order. */
+export function fillerObjectives (list: RequirementDef[], s: WorldState, suspended: (id: string) => boolean = () => false): Objective[] {
+  return unmetObjectives(list, s, { fillers: true }).filter(o => !suspended(o.id))
+}
+
 // ── Milestone B: build a portal, enter the Nether, return (milestones.md) ────
 // After nether_ready the A list steps aside except survival basics: B needs the
 // portal tools, not a full A kit again (a lava cast turns the empty bucket into a
@@ -227,8 +241,12 @@ const B = progression.B
 /** Milestone A reached in this run (first-reached time recorded by the controller). */
 export const aDone = (s: WorldState) => s.milestones.A != null
 
-/** A requirements still pursued after nether_ready. */
-const KEEP_AFTER_A = new Set(['emergency_food', 'wooden_pickaxe', 'stone_pickaxe'])
+/**
+ * A requirements still pursued after nether_ready: survival basics a death takes away. The
+ * stone sword is one of them (B gate 20261002: r02 ×2 and r13 died bare-handed during B work
+ * after an earlier death).
+ */
+const KEEP_AFTER_A = new Set(['emergency_food', 'wooden_pickaxe', 'stone_pickaxe', 'stone_sword'])
 
 function afterA (r: RequirementDef): RequirementDef {
   return { ...r, met: s => (aDone(s) && !KEEP_AFTER_A.has(r.id)) || (s.dim !== 'overworld') || r.met(s) }
@@ -239,8 +257,16 @@ const portalReady = (s: WorldState) => builtPortal(s) !== null
 /** Portal casting kit needed only until the portal stands. */
 const kitNeeded = (s: WorldState) => !tripDone(s) && !portalReady(s) && s.dim === 'overworld' && n(s, 'obsidian') < A.obsidian
 
+/** Golden helmet objective (bounded: no gold nearby means the trip goes ahead without it). */
+const goldArmorObj = () => ({ skill: 'obtain', params: { item: 'golden_helmet', count: 1, searchSteps: B.goldSearchSteps }, strategy: 'mine_gold', budgetMs: 10 * 60_000 })
+const hasGoldArmor = (s: WorldState) => Object.keys(s.inventory).some(k => GOLDEN_ARMOR.has(k) && n(s, k) > 0)
+
 export const B_REQUIREMENTS: RequirementDef[] = [
   ...A_REQUIREMENTS.map(afterA),
+  // Night filler before nether_ready: the golden helmet is mining and furnace work, so a night
+  // with only the food hunt left mines it instead of sheltering. B's order is unchanged: every
+  // B entry still waits for nether_ready, and b_gold_armor below is then already met.
+  { id: 'pre_gold_armor', milestone: 'B', filler: true, bounded: true, when: s => !aDone(s), requires: ['iron_pickaxe', 'iron_sword', 'shield'], desc: 'a golden armor piece (night work before nether_ready)', met: s => aDone(s) || s.dim !== 'overworld' || hasGoldArmor(s), objective: goldArmorObj },
   { id: 'b_flint_and_steel', milestone: 'B', when: aDone, desc: 'flint and steel (lights and relights the portal)', met: s => tripDone(s) || s.dim !== 'overworld' || n(s, 'flint_and_steel') >= 1, objective: () => obtainObj('flint_and_steel', 1, 8) },
   { id: 'b_water_bucket', milestone: 'B', when: aDone, desc: 'a water bucket for the lava cast', met: s => !kitNeeded(s) || n(s, 'water_bucket') >= 1, objective: () => obtainObj('water_bucket', 1, 8) },
   { id: 'b_bucket', milestone: 'B', when: aDone, desc: 'an empty (or lava) bucket for the lava cast', met: s => !kitNeeded(s) || n(s, 'bucket') + n(s, 'lava_bucket') >= 1, objective: () => obtainObj('bucket', 1, 6) },
@@ -248,7 +274,7 @@ export const B_REQUIREMENTS: RequirementDef[] = [
   { id: 'b_food', milestone: 'B', when: aDone, persistent: true, bounded: true, desc: `≥ ${B.foodItems} food items`, met: s => tripDone(s) || s.dim !== 'overworld' || foodItems(s.inventory) >= B.foodItems, objective: s => ({ skill: 'obtain', params: { item: 'raw_meat', count: countOf(s.inventory, 'raw_meat') + B.foodItems - foodItems(s.inventory), searchSteps: 3 }, strategy: 'hunt_nearby', budgetMs: 4 * 60_000 }) },
   // One golden armor piece before the Nether (architecture §14.4): piglins then stay neutral. Bounded:
   // when no gold is found nearby it is set aside and the trip goes ahead without it.
-  { id: 'b_gold_armor', milestone: 'B', when: aDone, bounded: true, desc: 'a golden armor piece (piglin neutrality)', met: s => tripDone(s) || s.dim !== 'overworld' || Object.keys(s.inventory).some(k => GOLDEN_ARMOR.has(k) && n(s, k) > 0), objective: () => ({ skill: 'obtain', params: { item: 'golden_helmet', count: 1, searchSteps: B.goldSearchSteps }, strategy: 'mine_gold', budgetMs: 10 * 60_000 }) },
+  { id: 'b_gold_armor', milestone: 'B', when: aDone, bounded: true, desc: 'a golden armor piece (piglin neutrality)', met: s => tripDone(s) || s.dim !== 'overworld' || hasGoldArmor(s), objective: goldArmorObj },
   { id: 'nether_portal', milestone: 'B', when: aDone, noRelocate: true, requires: ['wooden_pickaxe', 'b_flint_and_steel', 'b_water_bucket', 'b_bucket', 'b_lava_pool'], desc: 'a lit portal the bot built', met: s => tripDone(s) || s.dim === 'the_nether' || portalReady(s), objective: () => ({ skill: 'buildNetherPortal', params: { strategy: 'auto' }, strategy: 'lava_cast', budgetMs: 15 * 60_000 }) },
   // A pickaxe first: the way back to a portal is often dug (dev1 r05: pickaxes broke on the approach,
   // the wooden pickaxe was deferred at night and the entry failed 14× for lack of one).

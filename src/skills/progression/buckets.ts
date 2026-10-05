@@ -8,6 +8,7 @@ import { Vec3 } from 'vec3'
 import { liveView, type BlockView } from '../../nav/blocks.js'
 import type { V3 } from '../../schema/index.js'
 import type { Location } from '../../observer/types.js'
+import { awaitInventory } from '../../bot/inventory-sync.js'
 import { equipItem, waitFor, withTimeout } from '../acts.js'
 import { sleep } from '../runner.js'
 import type { SkillCtx } from '../types.js'
@@ -96,8 +97,13 @@ export async function useBucket (ctx: SkillCtx, item: 'water_bucket' | 'lava_buc
   const hit = bucketRay(liveView(bot), e2, dir, 5, mode)
   const lands = hit && (mode === 'pickup' ? same(hit.cell, target) : same([hit.cell[0] + hit.face[0], hit.cell[1] + hit.face[1], hit.cell[2] + hit.face[2]], target))
   if (!lands) return { ok: false, why: 'ray drifted off the target' }
+  const held = count(bot, item)
   bot.activateItem()
   const ok = await waitFor(done, ms, ctx.signal)
+  // The block update can arrive before the server's `set_slot` for the used bucket; the next
+  // swap would then click a stale slot and be rejected (B gate 20261002: 20 portal-build
+  // INFRA failures). Wait for the slot itself before returning.
+  if (ok) await awaitInventory(bot, () => count(bot, item) < held, 1500)
   return { ok, why: ok ? 'ok' : 'no block change' }
 }
 

@@ -9,6 +9,7 @@ import { ProcessRegistry } from './procs.js'
 import { aggregate, renderReport, type BatchFailureRow } from './report.js'
 import { renderSurvival } from './survival-report.js'
 import { renderPortal } from './portal-report.js'
+import { renderResources } from './resource-report.js'
 import { FIXTURES, ROOT, runOne, WORLDS, type FixtureName } from './run.js'
 import { MC_VERSION } from '../version.js'
 import { SERVER_PROPERTIES } from './server.js'
@@ -58,6 +59,8 @@ export type BatchOptions = {
   /** 'dev': fresh seeds for development batches (never a gate); 'heldout': a gate set. */
   set: 'heldout' | 'replay' | 'dev'
   replay?: string[]           // runIds whose private seeds to reuse (set = replay)
+  /** Continue an interrupted batch (host crash): its seeds come from its private manifest; runs never started are run. */
+  resume?: string
   keepWorld?: boolean
   label?: string
   fixture?: FixtureName
@@ -69,9 +72,14 @@ function stamp (): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
 }
 
+/** Evaluator-private seed manifest: written before the first run so a host crash cannot lose the rest of a held-out set. */
+export function seedManifestPath (dir: string): string { return join(dir, 'private', 'seeds.json') }
+
 export async function runBatch (o: BatchOptions): Promise<string> {
-  const batchId = `${stamp()}-${o.scenario}${o.label ? '-' + o.label : ''}`
-  const seedSet = o.fixture ? `fixture-${batchId}` : o.set === 'heldout' ? `heldout-${batchId}` : o.set === 'dev' ? `dev-${batchId}` : 'replay'
+  const resumed = o.resume ? JSON.parse(readFileSync(seedManifestPath(join(RUNS, o.resume)), 'utf8')) as { batchId: string; seedSet: string; seeds: string[]; options: Partial<BatchOptions> } : null
+  if (resumed) o = { ...o, ...resumed.options, resume: o.resume }
+  const batchId = resumed?.batchId ?? `${stamp()}-${o.scenario}${o.label ? '-' + o.label : ''}`
+  const seedSet = resumed?.seedSet ?? (o.fixture ? `fixture-${batchId}` : o.set === 'heldout' ? `heldout-${batchId}` : o.set === 'dev' ? `dev-${batchId}` : 'replay')
   const dir = join(RUNS, batchId)
   mkdirSync(dir, { recursive: true })
   const registry = new ProcessRegistry(join(ROOT, '.cache', 'pids'))
@@ -88,23 +96,40 @@ export async function runBatch (o: BatchOptions): Promise<string> {
   const java = resolveJava(ROOT)
   const rev = codeRev()
   const target = SCENARIO_TARGET[o.scenario] ?? o.scenario
-  const seeds: string[] = o.set === 'replay'
-    ? (o.replay ?? []).map(id => readFileSync(join(findRunDir(id), 'private', 'seed.txt'), 'utf8').trim())
-    : Array.from({ length: o.n }, () => freshSeed())
+  const seeds: string[] = resumed
+    ? resumed.seeds
+    : o.set === 'replay'
+      ? (o.replay ?? []).map(id => readFileSync(join(findRunDir(id), 'private', 'seed.txt'), 'utf8').trim())
+      : Array.from({ length: o.n }, () => freshSeed())
+  if (!resumed) {
+    mkdirSync(join(dir, 'private'), { recursive: true })
+    const options = { scenario: o.scenario, n: o.n, parallel: o.parallel, limitMs: o.limitMs, reasoner: o.reasoner, set: o.set, label: o.label, fixture: o.fixture, keepWorld: o.keepWorld }
+    writeFileSync(seedManifestPath(dir), JSON.stringify({ batchId, seedSet, seeds, options, writtenAt: new Date().toISOString() }, null, 1))
+  }
   const meta = {
     batchId, seedSet, n: seeds.length, scenario: o.scenario, reasoner: o.reasoner, limitMin: o.limitMs / 60_000, target,
     codeRev: rev.rev, dirty: rev.dirty, mcVersion: MC_VERSION, java: java.version,
     server: { ...SERVER_PROPERTIES, ...(o.fixture ? FIXTURES[o.fixture].properties : {}) }, parallel: o.parallel,
     startedAt: new Date().toISOString(), node: process.version, fixture: o.fixture ?? null,
   }
+  const runIdOf = (i: number) => `${batchId}-r${String(i + 1).padStart(2, '0')}`
+  let next = 0
+  if (resumed) {
+    // Runs that finished keep their summaries; a run the crash interrupted (directory, no
+    // summary) is not re-run on the same seed: it is scored infra_error (evaluation.md §1).
+    while (next < seeds.length && existsSync(join(dir, runIdOf(next)))) next++
+    const cut = Array.from({ length: next }, (_, i) => runIdOf(i)).filter(id => !existsSync(join(dir, id, 'summary.json')))
+    console.log(`resuming ${batchId} at run ${next + 1}/${seeds.length}${cut.length ? `; interrupted (score as infra_error): ${cut.join(', ')}` : ''}`)
+    const prev = JSON.parse(readFileSync(join(dir, 'batch.json'), 'utf8')) as { meta: Record<string, unknown> }
+    Object.assign(meta, { startedAt: prev.meta.startedAt, resumedAt: new Date().toISOString(), interrupted: cut, codeRevAtStart: prev.meta.codeRev, dirtyAtStart: prev.meta.dirty })
+  }
   writeFileSync(join(dir, 'batch.json'), JSON.stringify({ meta, status: 'running' }, null, 1))
 
   const summaries: RunSummary[] = new Array(seeds.length)
-  let next = 0
   const worker = async () => {
     while (next < seeds.length) {
       const i = next++
-      const runId = `${batchId}-r${String(i + 1).padStart(2, '0')}`
+      const runId = runIdOf(i)
       const runDir = join(dir, runId)
       const port = await freePort()
       console.log(`[${new Date().toISOString()}] run ${i + 1}/${seeds.length} ${runId} starting (port ${port})`)
@@ -165,7 +190,7 @@ export function writeBatchReport (batchId: string, metaOverride?: Record<string,
     reasoner: String(meta.reasoner), limitMin: meta.limitMin, date: String(meta.startedAt ?? ''), server: (meta.server ?? {}) as Record<string, string>,
     fixture: (meta.fixture as string | null) ?? null, mcVersion: meta.mcVersion as string | undefined, java: meta.java as string | undefined,
   }, agg, runs)
-  const extra = meta.scenario === 'b' ? `${renderPortal(dir, runs)}\n${renderSurvival(dir, runs)}` : meta.scenario === 'a' ? renderSurvival(dir, runs) : ''
+  const extra = meta.scenario === 'b' ? `${renderPortal(dir, runs)}\n${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : meta.scenario === 'a' ? `${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : ''
   const report = extra ? base.replace('## Skills', `${extra}\n## Skills`) : base
   writeFileSync(join(dir, 'report.md'), report)
   return report
