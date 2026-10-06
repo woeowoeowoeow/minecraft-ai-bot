@@ -3,12 +3,15 @@
 // npm run eval -- --scenario a --n 20 (milestone A: 45 min limit, reasoner none)
 // npm run eval -- --scenario b --n 20 (milestone B: 70 min limit, reasoner none) [--fixture bkit for development]
 // npm run eval -- --resume <batchId> (continue an interrupted batch from its private seed manifest)
+//   B batches apply the predeclared early-fail rules (evaluation.md §1, early-fail rules); --no-early-stop disables them
+// npm run inspect -- early-stop <batchId|runId> (replay the early-fail rules over finished runs)
 // npm run inspect -- run <runId> | batch <batchId>
 import { existsSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { ScenarioS } from '../schema/index.js'
 import { runBatch } from './batch.js'
 import { inspectBatch, inspectRun } from './inspect.js'
+import { inspectEarlyStop } from './early-stop-report.js'
 import { FIXTURES, JAR, type FixtureName } from './run.js'
 
 function parseDuration (s: string): number {
@@ -22,8 +25,8 @@ async function main (): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2)
   if (cmd === 'inspect') {
     const [what, id] = rest
-    if (!id || (what !== 'run' && what !== 'batch')) throw new Error('usage: inspect run <runId> | inspect batch <batchId>')
-    console.log(what === 'run' ? inspectRun(id) : inspectBatch(id))
+    if (!id || (what !== 'run' && what !== 'batch' && what !== 'early-stop')) throw new Error('usage: inspect run <runId> | inspect batch <batchId> | inspect early-stop <batchId|runId>')
+    console.log(what === 'run' ? inspectRun(id) : what === 'batch' ? inspectBatch(id) : inspectEarlyStop(id))
     return
   }
   if (cmd !== 'eval') throw new Error('usage: cli.ts eval … | cli.ts inspect …')
@@ -41,6 +44,7 @@ async function main (): Promise<void> {
       fixture: { type: 'string' },
       set: { type: 'string', default: 'heldout' },
       resume: { type: 'string' },
+      'no-early-stop': { type: 'boolean', default: false },
     },
   })
   const scenario = ScenarioS.parse(values.scenario)
@@ -56,6 +60,7 @@ async function main (): Promise<void> {
     keepWorld: values['keep-world'],
     label: values.label,
     resume: values.resume,
+    earlyStop: values['no-early-stop'] ? false : undefined,
     fixture: values.fixture === undefined ? undefined : values.fixture in FIXTURES ? values.fixture as FixtureName : (() => { throw new Error(`unknown fixture ${values.fixture}`) })(),
   })
   console.log('\n' + inspectBatch(batchId))

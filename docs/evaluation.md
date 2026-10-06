@@ -12,7 +12,15 @@ This is how every attempt is run, recorded and aggregated. The gates themselves 
   - `unrecoverable`: recovery reached L5
   - `infra_error`: server or bot crash, or disconnect not recovered
   - `intervened`: any pause, command or manual action
-- **Scored:** every outcome except `intervened` counts in the denominator. **`infra_error` counts as a failure** and is also reported separately. An infra rate above 5 % blocks the gate until it is fixed.
+  - `early_fail`: the evaluator stopped the run under a predeclared early-fail rule (below)
+- **Scored:** every outcome except `intervened` counts in the denominator. **`infra_error` counts as a failure** and is also reported separately. An infra rate above 5 % blocks the gate until it is fixed. **`early_fail` counts as a failure**, keeps all of its deaths, and records the rule and its evidence.
+- **Early-fail rules (milestone B batches, adopted 2026-10-05).** These save wall-clock time on runs that cannot recover. Scoring does not change: the B criteria stay ≥ 60 % reach B, ≤ 70 min/run, ≤ 1.0 deaths/run and 0 interventions, and 70 min remains the absolute limit. A scored run may end before 70 min only on:
+  1. *Existing terminal conditions:* 5 deaths, recovery L5 (`unrecoverable`), or an unrecoverable bot or server crash. These are the bot's or evaluator's own handling and are only labelled in the report.
+  2. *`objective_exhausted`:* the same required objective runs its whole recovery ladder (every strategy, ending in "strategies exhausted"). The controller then finds no alternate objective (`suspend_skipped`), so it would only relocate and start again. Firing needs **2** such exhaustions with no milestone or requirement progress in between. Upkeep objectives (bounded + persistent food reserves) never trigger it.
+  3. *`controller_stall`:* **all** of the following hold. (a) No milestone or requirement progress for **15 continuous minutes**. Progress means any `milestone` event (milestone or funnel flag), or an objective success that meets its requirement; upkeep successes and successes followed by `OBJECTIVE_NOT_SATISFIED` do not count. (b) The active requirement completed **≥ 3** failed-attempt + recovery-ladder cycles in that window. (c) Nothing new was discovered in that window: no `location_discovered` the bot observed, and no item type held for the first time in the run.
+  4. *`impossible_remainder`:* remaining wall time is below a deterministic lower bound on the still-unmet mandatory steps. The only strategy-independent minima are the portal transits (80 ticks each) and a sprint over the excursion distance and back, which gives at most 12.3 s. The A phase and the portal build have no defensible minimum. The rule could therefore only relabel natural timeouts in their last seconds, so it is **off** (`EARLY_STOP.remainderRule = false`). It is implemented and unit-tested.
+  
+  No run is stopped because it looks bad, is slow, has few resources, or seems unlikely to succeed. The evaluator reads the bot's own `events.jsonl` live (`src/evaluation/early-stop.ts`) on the bot's clock, so a replay of a finished run reproduces the live decision: `npm run inspect -- early-stop <batchId|runId>`. On a trigger it writes `early_stop.json` and an `early_stop` ground-truth record, stops the bot (which writes its result and deaths), and scores `early_fail`. The B report's "Early-fail rules" section lists the gate criteria, then each stopped run's rule, time, wall time saved, stage, margin over the thresholds and evidence, then the rule-1 terminal runs. `--no-early-stop` disables the rules (dev only).
 - **Fixture run:** the evaluator uses server console commands to set up a state (for example, starting in the End with gear). Fixture runs are labeled `fixture: true`, use their own seed pool, and never count toward a gate.
 
 ## 2. Seeds and isolation (anti-overfitting rules)
@@ -846,3 +854,47 @@ Scope: the underwater-log regression only (round-3 gate r02/r08: 8 drowned death
 | fresh dev `20261005-122339-b-wood-hotfix-smoke` | – | 2/3 B (1 367 s, 1 949 s, 0 deaths); r01 timeout, 3 deaths (creeper ×2, zombie bare-handed while sheltering): food hunts exhausted, flint at 3 090 s; wood zones fired 2×, no wood search failure |
 
 Replay + smoke: 4/5 B, 4 deaths (0.80/run), 0 drowned deaths, 0 sea-floor wood targets. Residuals (not wood): flee chains in open water on island spawns; creeper deaths after gear loss.
+
+### B gate procedure: early-fail rules (2026-10-05, evaluator only; bot code unchanged from ed01f93)
+
+Scope: reduce wall-clock time lost on runs that cannot recover, without changing scoring (§1, early-fail rules). The B criteria are unchanged. Early-stopped runs stay in the denominator as failures and keep their deaths.
+
+**Thresholds, fixed before the gate:** `objective_exhausted` at 2 full exhaustions with no alternate objective; `controller_stall` at 15 min without progress, plus ≥ 3 cycles of the active requirement, plus no discovery; `impossible_remainder` off (its only defensible bound is 12.3 s).
+
+**Validation (replay of every finished historical B run with an event log, 106 runs: 69 successes, 37 failures).**
+- Unit tests: `tests/unit/early-stop.test.ts` 25/25. Each rule is tested positive and negative (repeat, alternate, progress reset, upkeep, wrong suspend kind; 15-min boundary, cycle count, window, discovery kinds, progress kinds, active requirement; the bound and its off switch; rule-1 labels; the live tail). One live evaluator run (fake bot) ends `early_fail` with its death and `early_stop.json`. Replays of trimmed historical event streams (`tests/unit/fixtures/early-stop/`): 3 failed runs stop earlier, and 3 slow or closest-call successes are not stopped. Evaluator and report tests 13/13. The full suite was not rerun.
+- **Failed runs stopped earlier (replay):**
+
+| run | natural end | rule | stop at | saved | stage |
+|---|---|---|---|---|---|
+| b2-gate r09 | timeout 4 200 s | controller_stall | 1 600 s | 43 min | A-phase, `food` hunt (11 cycles, no progress since bucket 662 s) |
+| b2-gate r10 | L5 3 794 s | objective_exhausted | 1 461 s | 39 min | A-phase, `food` exhausted 2× with nothing else to do |
+| b2-gate r05 | L5 3 121 s | controller_stall | 1 544 s | 26 min | A-phase, `food` (4 cycles) |
+| b2-dev3 r05 | L5 3 732 s | controller_stall | 2 205 s | 25 min | B-phase, `stone_pickaxe` STATE_INCONSISTENT (equip wedge) |
+| b-gate-part2 r01 | L5 3 875 s | controller_stall | 2 567 s | 22 min | A-phase, `wooden_pickaxe` STALLED (stale Mining Fatigue) |
+| b-gate r13 | infra (host crash) 2 613 s | controller_stall | 1 876 s | 12 min | B-phase, `b_gold_armor` SKILL_TIMEOUT |
+
+  Across the four historical B gates, this would have saved 0 to 109 min per gate (b-gate 12, part 2 22, b2-gate 109, b3-gate 0). The b3-gate failures were death_limit ×2, timeouts with intermittent progress ×2 and infra ×1, which the rules correctly leave alone.
+- **Slow successes not stopped:** b3-gate r15 (B 3 726 s, 3 deaths), b2-gate r18 (3 496 s), b2-gate r11 (3 461 s), b-gate r06 (3 441 s), b2-gate r07 (3 335 s), b-gate r08 (3 167 s), wood-hotfix replay r02 (4 162 s). None of the 69 successes is stopped.
+- **Margin / aggressiveness:** tightening the stall window to ≤ 11 min would stop a success (b3-dev1 r06, B 2 681 s, at 1 659 s). A single exhaustion would stop two successes (b-dev2 r02, b3-dev1 r06). Dropping to 2 cycles stops nothing new. At 15 min and 2 exhaustions there are ≥ 4 min of stall margin and a 2× exhaustion margin over the closest success. Stops with exactly 3 cycles and < 16 min without progress are flagged "minimal margin" in the report.
+
+### Milestone B re-gate (wood hotfix, early-fail procedure) on 1.16.1: 2026-10-05/06 (code uncommitted on ed01f93, content hash `4c8cac037e7e0da1`; Node 22.23.3, Java 1.8.0_504, mineflayer 4.39.0)
+
+`20261005-145957-b-b4-gate`: 20 fresh held-out seeds, 70 min, reasoner none, `--parallel 1`, early-fail rules on (thresholds as fixed above). Bot code = the wood-target hotfix (ed01f93); only the evaluator changed. 0 host suspensions, 0 infra.
+
+| B criterion (unchanged) | result | verdict |
+|---|---|---|
+| ≥ 60 % reach B | **15/20 = 75 %** (Wilson 95 % CI 53–89 %), GT 15/15 verified | PASS |
+| ≤ 70 min/run | all 15 within 70 min (p50 1 725 s, p90 2 654 s, max 3 094 s) | PASS |
+| ≤ 1.0 deaths/run | **13 deaths = 0.65/run** (creeper 4, zombie 3, skeleton 2, ghast 2, wolf 1, husk 1); 0 drowned; 1 repeat death < 5 min | PASS |
+| 0 interventions | 0 | PASS |
+
+**Gate: milestone B PASSES.** Compare round-3 gate 20261004: 15/20, 1.20 deaths/run.
+
+Failures (5): r10 timeout (nether_ready 1 620 s; creeper death at the portal site 1 817 s, then re-gearing; no portal), r11 timeout (never nether_ready; food_10 never reached, 1 184 s sheltering), r14 timeout (in the Nether 1 694 s; two ghast deaths; excursion 3 115 s, no return), r18 timeout (3 creeper deaths before nether_ready; nether_ready 3 917 s, excursion at 4 181 s, out of time), r15 unrecoverable (`nether_excursion` failed 14×, NAV_HAZARD, L5 at 2 153 s; rule 1).
+
+**Early-fail rules in the gate: 0 runs stopped, 0 min saved.** The rule-1 L5 run (r15) ended 34 min before the limit, as before. Not stopped, correctly by the predeclared definitions:
+- r11, r14, r18: the longest stretch without progress was 794 s, 682 s and 790 s respectively, all under 15 min, and r14 and r18 also had discoveries in it.
+- r10: no progress for 1 118 s (1 620 → 2 738 s). The cycles came from `b_gold_armor` (8, MISSING_RESOURCE after the death) and then `wooden_pickaxe` (2). Once the active requirement switched to `wooden_pickaxe` at 2 517 s, it had only 2 cycles before progress resumed.
+
+No trigger looks aggressive (none fired). If anything they are conservative: requirements re-met after a death (re-crafting tools) count as progress, which kept r10, r14 and r18 alive to the limit. Any change to that definition must be made before a future gate, not applied to this one.

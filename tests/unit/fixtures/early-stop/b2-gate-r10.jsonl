@@ -1,0 +1,581 @@
+{"meta":{"run":"20261003-103119-b-b2-gate-r10","outcome":"unrecoverable","elapsedS":3794,"B":null,"deaths":0}}
+{"t":1.2,"type":"objective","data":{"id":"wooden_pickaxe","skill":"obtain"}}
+{"t":1.6,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2.7,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2.8,"type":"interrupt_start","data":{"id":"forage"}}
+{"t":13.6,"type":"skill_end","data":{"skill":"hunt","status":"success","depth":0}}
+{"t":13.6,"type":"interrupt_end","data":{"id":"forage"}}
+{"t":16.1,"type":"item_delta","data":{"delta":{"beef":2}}}
+{"t":16.1,"type":"location_discovered","data":{"kind":"lava_pool","source":"observed"}}
+{"t":16.2,"type":"milestone","data":{"id":"lava_pool_known"}}
+{"t":21.1,"type":"item_delta","data":{"delta":{"oak_log":1}}}
+{"t":26.1,"type":"item_delta","data":{"delta":{"oak_planks":3,"stick":2,"wooden_pickaxe":1}}}
+{"t":26.3,"type":"milestone","data":{"id":"has_wooden_pickaxe"}}
+{"t":30,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":30.1,"type":"milestone","data":{"id":"M0"}}
+{"t":30.1,"type":"objective","data":{"id":"stone_pickaxe","skill":"obtain"}}
+{"t":31.2,"type":"item_delta","data":{"delta":{"crafting_table":1}}}
+{"t":36.2,"type":"item_delta","data":{"delta":{"dirt":2,"cobblestone":1}}}
+{"t":42.3,"type":"milestone","data":{"id":"has_stone_pickaxe"}}
+{"t":46.2,"type":"item_delta","data":{"delta":{"stone_pickaxe":1}}}
+{"t":46.4,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":46.4,"type":"objective","data":{"id":"stone_sword","skill":"obtain"}}
+{"t":51.2,"type":"item_delta","data":{"delta":{"stone_sword":1}}}
+{"t":53.2,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":53.2,"type":"objective","data":{"id":"food_buffer","skill":"obtain"}}
+{"t":91.3,"type":"item_delta","data":{"delta":{"white_wool":1,"mutton":1}}}
+{"t":91.9,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":91.9,"type":"objective","data":{"id":"kit_wood","skill":"obtain"}}
+{"t":98.9,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":98.9,"type":"interrupt_start","data":{"id":"forage"}}
+{"t":109.1,"type":"skill_end","data":{"skill":"hunt","status":"success","depth":0}}
+{"t":109.1,"type":"interrupt_end","data":{"id":"forage"}}
+{"t":119.5,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":119.6,"type":"interrupt_start","data":{"id":"pickup"}}
+{"t":119.8,"type":"skill_end","data":{"skill":"pickupDrops","status":"success","depth":0}}
+{"t":119.8,"type":"interrupt_end","data":{"id":"pickup"}}
+{"t":119.8,"type":"interrupt_start","data":{"id":"pickup"}}
+{"t":126.7,"type":"skill_end","data":{"skill":"pickupDrops","status":"success","depth":0}}
+{"t":126.7,"type":"interrupt_end","data":{"id":"pickup"}}
+{"t":126.7,"type":"objective","data":{"id":"kit_pickaxe","skill":"obtain"}}
+{"t":147.3,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":147.4,"type":"objective","data":{"id":"kit_sticks","skill":"obtain"}}
+{"t":147.4,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":147.6,"type":"objective","data":{"id":"iron_ingots","skill":"obtain"}}
+{"t":176.4,"type":"item_delta","data":{"delta":{"iron_ore":3}}}
+{"t":221.4,"type":"item_delta","data":{"delta":{"granite":1}}}
+{"t":251.4,"type":"item_delta","data":{"delta":{"diorite":2}}}
+{"t":261.4,"type":"item_delta","data":{"delta":{"coal":3,"furnace":1}}}
+{"t":482.5,"type":"milestone","data":{"id":"has_iron_ingot"}}
+{"t":486.5,"type":"item_delta","data":{"delta":{"iron_ingot":22}}}
+{"t":488,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":488,"type":"objective","data":{"id":"iron_pickaxe","skill":"obtain"}}
+{"t":488.5,"type":"milestone","data":{"id":"has_iron_pick"}}
+{"t":491.5,"type":"item_delta","data":{"delta":{"iron_pickaxe":1}}}
+{"t":492.4,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":492.4,"type":"objective","data":{"id":"iron_sword","skill":"obtain"}}
+{"t":493.5,"type":"milestone","data":{"id":"has_iron_sword"}}
+{"t":496.5,"type":"item_delta","data":{"delta":{"iron_sword":1}}}
+{"t":496.8,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":496.8,"type":"objective","data":{"id":"shield","skill":"obtain"}}
+{"t":497.1,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":497.1,"type":"milestone","data":{"id":"has_shield"}}
+{"t":497.1,"type":"interrupt_start","data":{"id":"equip"}}
+{"t":497.2,"type":"skill_end","data":{"skill":"equipGear","status":"success","depth":0}}
+{"t":497.2,"type":"interrupt_end","data":{"id":"equip"}}
+{"t":497.2,"type":"objective","data":{"id":"iron_helmet","skill":"obtain"}}
+{"t":497.2,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":497.4,"type":"interrupt_start","data":{"id":"equip"}}
+{"t":497.4,"type":"skill_end","data":{"skill":"equipGear","status":"success","depth":0}}
+{"t":497.4,"type":"interrupt_end","data":{"id":"equip"}}
+{"t":497.5,"type":"objective","data":{"id":"iron_boots","skill":"obtain"}}
+{"t":497.5,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":497.5,"type":"milestone","data":{"id":"iron_armor_2"}}
+{"t":497.7,"type":"interrupt_start","data":{"id":"equip"}}
+{"t":497.7,"type":"skill_end","data":{"skill":"equipGear","status":"success","depth":0}}
+{"t":497.7,"type":"interrupt_end","data":{"id":"equip"}}
+{"t":497.8,"type":"objective","data":{"id":"bucket","skill":"obtain"}}
+{"t":497.8,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":498,"type":"milestone","data":{"id":"has_bucket"}}
+{"t":498,"type":"objective","data":{"id":"food","skill":"obtain"}}
+{"t":501.6,"type":"item_delta","data":{"delta":{"shield":1,"iron_helmet":1,"iron_boots":1,"bucket":1}}}
+{"t":566.7,"type":"location_discovered","data":{"kind":"lava_pool","source":"observed"}}
+{"t":581.7,"type":"item_delta","data":{"delta":{"gray_wool":1}}}
+{"t":581.7,"type":"location_discovered","data":{"kind":"lava_pool","source":"observed"}}
+{"t":585.5,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":585.5,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":587.1,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":587.1,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":601.3,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":601.3,"type":"objective","data":{"id":"water_bucket","skill":"obtain"}}
+{"t":621.7,"type":"location_discovered","data":{"kind":"lava_pool","source":"observed"}}
+{"t":692.1,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":692.1,"type":"milestone","data":{"id":"has_water_bucket"}}
+{"t":692.1,"type":"objective","data":{"id":"bucket","skill":"obtain"}}
+{"t":696.7,"type":"item_delta","data":{"delta":{"water_bucket":1}}}
+{"t":696.8,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":696.8,"type":"objective","data":{"id":"flint_and_steel","skill":"obtain"}}
+{"t":727.3,"type":"item_delta","data":{"delta":{"gravel":2}}}
+{"t":773.8,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":773.8,"type":"milestone","data":{"id":"has_flint_and_steel"}}
+{"t":777.3,"type":"item_delta","data":{"delta":{"flint_and_steel":1}}}
+{"t":836.9,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":897,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":957,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1017.1,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1077.2,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1137.4,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1165.4,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1165.4,"type":"objective","data":{"id":"food","skill":"obtain"}}
+{"t":1194.6,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1194.6,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":1196.2,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":1196.2,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":1207.8,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1207.8,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1210.6,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1210.6,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1210.9,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1210.9,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1217.7,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1217.7,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1217.7,"type":"interrupt_start","data":{"id":"defend"}}
+{"t":1221.7,"type":"skill_end","data":{"skill":"defend","status":"success","depth":0}}
+{"t":1221.7,"type":"interrupt_end","data":{"id":"defend"}}
+{"t":1221.7,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1227.1,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1227.1,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1227.1,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":1257.4,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1257.4,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":1258.6,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1258.6,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1267.7,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1267.7,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1268.2,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1268.2,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1272.6,"type":"item_delta","data":{"delta":{"bone":1}}}
+{"t":1274.2,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1274.2,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1274.2,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1274.2,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1274.4,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1274.4,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1276.4,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1277.7,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1277.7,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1286.4,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1286.4,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1286.4,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1286.4,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"food","note":"strategy wide","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1290.4,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1292.7,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1292.7,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1297.6,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1297.6,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1299.9,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1299.9,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1303.5,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1303.5,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1303.6,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1303.6,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1310.3,"type":"skill_end","data":{"skill":"holdSafe","status":"cancelled","depth":0}}
+{"t":1310.3,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":1314.3,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1314.3,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":1314.3,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1314.3,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1330.4,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1332.9,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1332.9,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1341.1,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1341.1,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1341.2,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1341.2,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"food","note":"strategies exhausted for food","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1371.2,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1371.2,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"food","note":"no other objective available; relocating"}}
+{"t":1372.2,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1372.2,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1383.1,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1383.1,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1383.1,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1383.1,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1383.3,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1383.4,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1385.4,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1385.6,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1385.6,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1394,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1394,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1394,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1394,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"food","note":"strategy wide","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1398,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1398,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1398,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1406,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1406,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1406,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1422,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1422.3,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1422.3,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1430.6,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1430.6,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1430.6,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1430.6,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"food","note":"strategies exhausted for food","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1460.6,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1460.6,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"food","note":"no other objective available; relocating"}}
+{"t":1460.9,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1460.9,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1469.2,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1469.2,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1469.2,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1469.2,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1469.4,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1469.4,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1471.4,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1471.7,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1471.7,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1480,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1480,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1480,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1480,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"food","note":"strategy wide","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1484,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1484,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1484,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1492,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1492,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1492,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1508,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1508.3,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1508.3,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1516.7,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1516.7,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1516.7,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1516.7,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"food","note":"strategies exhausted for food","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1546.7,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1546.7,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"food","note":"no other objective available; relocating"}}
+{"t":1547,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1547,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1555.3,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1555.3,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1555.3,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1555.3,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1555.5,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1555.5,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1557.5,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1557.8,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1557.8,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1566.2,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1566.2,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1566.2,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1566.2,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"food","note":"strategy wide","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1570.2,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1570.2,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1570.2,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1578.2,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1578.2,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1578.2,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1594.2,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1594.5,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1594.5,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1602.8,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1602.8,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1602.8,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1602.8,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"food","note":"strategies exhausted for food","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1632.8,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1632.8,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"food","note":"no other objective available; relocating"}}
+{"t":1633.1,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1633.1,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1641.4,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1641.4,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1641.4,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1641.4,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1641.7,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1641.7,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1643.7,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1643.9,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1643.9,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1652.3,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1652.3,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1652.3,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1652.3,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"food","note":"strategy wide","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1656.3,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1656.3,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1656.3,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1664.3,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1664.3,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1664.3,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1680.3,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1680.5,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1680.5,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1688.8,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1688.8,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1688.8,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1688.8,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"food","note":"strategies exhausted for food","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1718.8,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1718.8,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"food","note":"no other objective available; relocating"}}
+{"t":1719.1,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1719.1,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1729.3,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1729.3,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1729.3,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":1730.8,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":1730.8,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":1730.9,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1730.9,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"food","note":"retry (failed targets are blacklisted)","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1731.1,"type":"skill_end","data":{"skill":"obtain","status":"failure","depth":0}}
+{"t":1731.1,"type":"recovery_step","data":{"level":"L2","action":"relocate","objective":"food","note":"relocate, then retry","signature":"SEARCH_EXHAUSTED|obtain|food|overworld|step=hunt,target=raw_meat"}}
+{"t":1733.1,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":1733.4,"type":"skill_end","data":{"skill":"relocate","status":"cancelled","depth":0}}
+{"t":1733.4,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1737.1,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1737.1,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1737.1,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":1738.7,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":1738.7,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":1738.7,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":1768.8,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1768.8,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":1768.8,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":1770.3,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":1770.3,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":1770.3,"type":"interrupt_start","data":{"id":"rest"}}
+{"t":1786.4,"type":"skill_end","data":{"skill":"rest","status":"success","depth":0}}
+{"t":1786.4,"type":"interrupt_end","data":{"id":"rest"}}
+{"t":1788.2,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1788.2,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1798.5,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1798.5,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1798.8,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":1798.8,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":1807.1,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":1807.1,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":1828.7,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":1828.7,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":1858.7,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1858.7,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":1889,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":1889,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":1919.1,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1919.1,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":1949.2,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":1949.2,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":1951.2,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":1951.2,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":1981.3,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":1981.3,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2011.3,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2011.3,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2041.4,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":2041.4,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2071.5,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2071.5,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2115.1,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":2115.1,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2143.3,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2143.3,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2173.3,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":2173.3,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2203.3,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2203.3,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2263.3,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2309.8,"type":"skill_end","data":{"skill":"shelter","status":"cancelled","depth":0}}
+{"t":2309.8,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2339.8,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2339.8,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2365.8,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2370.2,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2370.2,"type":"interrupt_start","data":{"id":"defend"}}
+{"t":2375.3,"type":"skill_end","data":{"skill":"defend","status":"success","depth":0}}
+{"t":2375.3,"type":"interrupt_end","data":{"id":"defend"}}
+{"t":2378.7,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2378.7,"type":"interrupt_start","data":{"id":"defend"}}
+{"t":2379.5,"type":"skill_end","data":{"skill":"defend","status":"success","depth":0}}
+{"t":2379.5,"type":"interrupt_end","data":{"id":"defend"}}
+{"t":2379.5,"type":"interrupt_start","data":{"id":"flee"}}
+{"t":2382,"type":"skill_end","data":{"skill":"flee","status":"success","depth":0}}
+{"t":2382,"type":"interrupt_end","data":{"id":"flee"}}
+{"t":2386.8,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2386.8,"type":"interrupt_start","data":{"id":"flee"}}
+{"t":2387.8,"type":"location_discovered","data":{"kind":"lava_pool","source":"observed"}}
+{"t":2389.1,"type":"skill_end","data":{"skill":"flee","status":"success","depth":0}}
+{"t":2389.1,"type":"interrupt_end","data":{"id":"flee"}}
+{"t":2402.2,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2402.2,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":2413.2,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":2413.2,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":2413.2,"type":"interrupt_start","data":{"id":"forage"}}
+{"t":2417,"type":"skill_end","data":{"skill":"hunt","status":"success","depth":0}}
+{"t":2417,"type":"interrupt_end","data":{"id":"forage"}}
+{"t":2417,"type":"interrupt_start","data":{"id":"pickup"}}
+{"t":2417.8,"type":"item_delta","data":{"delta":{"leather":2}}}
+{"t":2418.9,"type":"skill_end","data":{"skill":"pickupDrops","status":"success","depth":0}}
+{"t":2418.9,"type":"interrupt_end","data":{"id":"pickup"}}
+{"t":2418.9,"type":"interrupt_start","data":{"id":"pickup"}}
+{"t":2419.9,"type":"skill_end","data":{"skill":"pickupDrops","status":"success","depth":0}}
+{"t":2419.9,"type":"interrupt_end","data":{"id":"pickup"}}
+{"t":2422.8,"type":"item_delta","data":{"delta":{"oak_sapling":1}}}
+{"t":2424.4,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2424.4,"type":"interrupt_start","data":{"id":"cover"}}
+{"t":2431.9,"type":"skill_end","data":{"skill":"cover","status":"success","depth":0}}
+{"t":2431.9,"type":"interrupt_end","data":{"id":"cover"}}
+{"t":2431.9,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2462.1,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2462.1,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2492.2,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2492.2,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2522.3,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2522.3,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2552.5,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2552.5,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2582.5,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2582.5,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2612.7,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2612.7,"type":"interrupt_start","data":{"id":"hold"}}
+{"t":2628.8,"type":"skill_end","data":{"skill":"shelter","status":"success","depth":0}}
+{"t":2628.8,"type":"interrupt_end","data":{"id":"hold"}}
+{"t":2654.2,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2654.2,"type":"interrupt_start","data":{"id":"defend"}}
+{"t":2661.7,"type":"skill_end","data":{"skill":"defend","status":"success","depth":0}}
+{"t":2661.7,"type":"interrupt_end","data":{"id":"defend"}}
+{"t":2661.7,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":2663.2,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":2663.2,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":2666.3,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2666.4,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":2667.9,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":2667.9,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":2667.9,"type":"interrupt_start","data":{"id":"rest"}}
+{"t":2684.4,"type":"skill_end","data":{"skill":"rest","status":"success","depth":0}}
+{"t":2684.4,"type":"interrupt_end","data":{"id":"rest"}}
+{"t":2684.4,"type":"interrupt_start","data":{"id":"forage"}}
+{"t":2692.9,"type":"item_delta","data":{"delta":{"chicken":1}}}
+{"t":2692.9,"type":"skill_end","data":{"skill":"hunt","status":"success","depth":0}}
+{"t":2692.9,"type":"interrupt_end","data":{"id":"forage"}}
+{"t":2702.9,"type":"item_delta","data":{"delta":{"feather":1}}}
+{"t":2718,"type":"item_delta","data":{"delta":{"arrow":2}}}
+{"t":2753.1,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2753.1,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":2754.6,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":2754.6,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":2754.6,"type":"interrupt_start","data":{"id":"forage"}}
+{"t":2757.9,"type":"skill_end","data":{"skill":"hunt","status":"success","depth":0}}
+{"t":2757.9,"type":"interrupt_end","data":{"id":"forage"}}
+{"t":2898.3,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2898.3,"type":"milestone","data":{"id":"A"}}
+{"t":2898.3,"type":"milestone","data":{"id":"food_10"}}
+{"t":2898.3,"type":"milestone","data":{"id":"nether_ready"}}
+{"t":2898.3,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":2899.9,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":2899.9,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":2899.9,"type":"objective","data":{"id":"b_gold_armor","skill":"obtain"}}
+{"t":2903.1,"type":"item_delta","data":{"delta":{"cooked_mutton":8,"cooked_beef":3,"cooked_chicken":2}}}
+{"t":2923.1,"type":"item_delta","data":{"delta":{"andesite":1}}}
+{"t":2927,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2927,"type":"interrupt_start","data":{"id":"inventory"}}
+{"t":2927.3,"type":"skill_end","data":{"skill":"manageInventory","status":"success","depth":0}}
+{"t":2927.3,"type":"interrupt_end","data":{"id":"inventory"}}
+{"t":2947.4,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2947.4,"type":"interrupt_start","data":{"id":"inventory"}}
+{"t":2947.7,"type":"skill_end","data":{"skill":"manageInventory","status":"success","depth":0}}
+{"t":2947.7,"type":"interrupt_end","data":{"id":"inventory"}}
+{"t":2948.1,"type":"item_delta","data":{"delta":{"gold_ore":3}}}
+{"t":2967.8,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2967.8,"type":"interrupt_start","data":{"id":"inventory"}}
+{"t":2968.1,"type":"skill_end","data":{"skill":"manageInventory","status":"success","depth":0}}
+{"t":2968.1,"type":"interrupt_end","data":{"id":"inventory"}}
+{"t":2968.1,"type":"item_delta","data":{"delta":{"gold_ingot":1}}}
+{"t":2988.1,"type":"skill_end","data":{"skill":"obtain","status":"cancelled","depth":0}}
+{"t":2988.1,"type":"interrupt_start","data":{"id":"inventory"}}
+{"t":2988.4,"type":"skill_end","data":{"skill":"manageInventory","status":"success","depth":0}}
+{"t":2988.4,"type":"interrupt_end","data":{"id":"inventory"}}
+{"t":3002.8,"type":"skill_end","data":{"skill":"obtain","status":"success","depth":0}}
+{"t":3002.8,"type":"interrupt_start","data":{"id":"equip"}}
+{"t":3002.8,"type":"skill_end","data":{"skill":"equipGear","status":"success","depth":0}}
+{"t":3002.8,"type":"interrupt_end","data":{"id":"equip"}}
+{"t":3002.8,"type":"objective","data":{"id":"nether_portal","skill":"buildNetherPortal"}}
+{"t":3005.5,"type":"item_delta","data":{"delta":{"golden_helmet":1}}}
+{"t":3008.5,"type":"skill_end","data":{"skill":"buildNetherPortal","status":"cancelled","depth":0}}
+{"t":3008.5,"type":"interrupt_start","data":{"id":"inventory"}}
+{"t":3008.8,"type":"skill_end","data":{"skill":"manageInventory","status":"success","depth":0}}
+{"t":3008.8,"type":"interrupt_end","data":{"id":"inventory"}}
+{"t":3100.5,"type":"item_delta","data":{"delta":{"lava_bucket":1}}}
+{"t":3199.9,"type":"skill_end","data":{"skill":"buildNetherPortal","status":"success","depth":0}}
+{"t":3200,"type":"milestone","data":{"id":"portal_built"}}
+{"t":3200,"type":"objective","data":{"id":"enter_nether","skill":"usePortal"}}
+{"t":3205.4,"type":"dimension_change","data":{"to":"the_nether"}}
+{"t":3205.9,"type":"location_discovered","data":{"kind":"portal_nether","source":"observed"}}
+{"t":3206,"type":"milestone","data":{"id":"in_nether"}}
+{"t":3206,"type":"milestone","data":{"id":"portal_nether"}}
+{"t":3215.8,"type":"skill_end","data":{"skill":"usePortal","status":"success","depth":0}}
+{"t":3215.8,"type":"objective","data":{"id":"nether_excursion","skill":"netherExcursion"}}
+{"t":3215.8,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3215.8,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry (failed targets are blacklisted)","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3216.1,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3216.1,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry again (no relocation for this obje","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3218.1,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3218.2,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3218.2,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"nether_excursion","note":"strategy wide","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3222.2,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3222.3,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3222.3,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry (failed targets are blacklisted)","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3230.3,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3230.4,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3230.4,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry again (no relocation for this obje","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3246.4,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3246.4,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3246.4,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"nether_excursion","note":"strategies exhausted for nether_excursio","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3276.3,"type":"skill_end","data":{"skill":"holdSafe","status":"cancelled","depth":0}}
+{"t":3276.3,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"nether_excursion","note":"no other objective available; relocating"}}
+{"t":3276.3,"type":"recovery_step","data":{"level":"L2","action":"retreat","objective":"nether_excursion","note":"Nether: retreat through the portal inste"}}
+{"t":3276.6,"type":"skill_end","data":{"skill":"usePortal","status":"cancelled","depth":0}}
+{"t":3276.6,"type":"interrupt_start","data":{"id":"eat"}}
+{"t":3278.4,"type":"dimension_change","data":{"to":"overworld"}}
+{"t":3278.4,"type":"skill_end","data":{"skill":"eat","status":"success","depth":0}}
+{"t":3278.4,"type":"interrupt_end","data":{"id":"eat"}}
+{"t":3278.6,"type":"objective","data":{"id":"enter_nether","skill":"usePortal"}}
+{"t":3306.1,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3306.1,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3334.6,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3334.6,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3336.6,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3365.1,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3365.1,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"enter_nether","note":"strategy wide","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3392.3,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3392.3,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3394.3,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3422.8,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3422.8,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3451.4,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3451.4,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"enter_nether","note":"strategies exhausted for enter_nether","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3453.5,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3453.5,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"enter_nether","note":"no other objective available; relocating"}}
+{"t":3505.1,"type":"skill_end","data":{"skill":"relocate","status":"success","depth":0}}
+{"t":3519.5,"type":"dimension_change","data":{"to":"the_nether"}}
+{"t":3520.8,"type":"skill_end","data":{"skill":"usePortal","status":"success","depth":0}}
+{"t":3520.8,"type":"objective","data":{"id":"nether_excursion","skill":"netherExcursion"}}
+{"t":3520.9,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3520.9,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry (failed targets are blacklisted)","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3521.1,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3521.1,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry again (no relocation for this obje","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3523.2,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3523.3,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3523.3,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"nether_excursion","note":"strategy wide","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3527.3,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3527.4,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3527.4,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry (failed targets are blacklisted)","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3535.4,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3535.5,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3535.5,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry again (no relocation for this obje","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3551.5,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3551.6,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3551.6,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"nether_excursion","note":"strategies exhausted for nether_excursio","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3581.6,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3581.6,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"nether_excursion","note":"no other objective available; relocating"}}
+{"t":3581.6,"type":"recovery_step","data":{"level":"L2","action":"retreat","objective":"nether_excursion","note":"Nether: retreat through the portal inste"}}
+{"t":3585.9,"type":"dimension_change","data":{"to":"overworld"}}
+{"t":3586.7,"type":"skill_end","data":{"skill":"usePortal","status":"success","depth":0}}
+{"t":3586.7,"type":"objective","data":{"id":"enter_nether","skill":"usePortal"}}
+{"t":3614.2,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3614.3,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3642.7,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3642.7,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3644.8,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3673.4,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3673.4,"type":"recovery_step","data":{"level":"L3","action":"alternate","objective":"enter_nether","note":"strategy wide","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3700.6,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3700.6,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3702.6,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3731.1,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3731.1,"type":"recovery_step","data":{"level":"L2","action":"resync","objective":"enter_nether","note":"resync inventory and retry","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3759.7,"type":"skill_end","data":{"skill":"usePortal","status":"failure","depth":0}}
+{"t":3759.7,"type":"recovery_step","data":{"level":"L3","action":"suspend","objective":"enter_nether","note":"strategies exhausted for enter_nether","signature":"STATE_INCONSISTENT|usePortal|enter_nether|overworld|step=teleport|dim=overworld"}}
+{"t":3761.7,"type":"skill_end","data":{"skill":"holdSafe","status":"success","depth":0}}
+{"t":3761.7,"type":"recovery_step","data":{"level":"L3","action":"suspend_skipped","objective":"enter_nether","note":"no other objective available; relocating"}}
+{"t":3770.9,"type":"skill_end","data":{"skill":"relocate","status":"success","depth":0}}
+{"t":3782.9,"type":"dimension_change","data":{"to":"the_nether"}}
+{"t":3794,"type":"skill_end","data":{"skill":"usePortal","status":"success","depth":0}}
+{"t":3794,"type":"objective","data":{"id":"nether_excursion","skill":"netherExcursion"}}
+{"t":3794.1,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}
+{"t":3794.1,"type":"recovery_step","data":{"level":"L2","action":"retry","objective":"nether_excursion","note":"retry (failed targets are blacklisted)","signature":"NAV_HAZARD|netherExcursion|nether_excursion|the_nether|step=excursion"}}
+{"t":3794.3,"type":"skill_end","data":{"skill":"netherExcursion","status":"failure","depth":0}}

@@ -10,6 +10,7 @@ import { aggregate, renderReport, type BatchFailureRow } from './report.js'
 import { renderSurvival } from './survival-report.js'
 import { renderPortal } from './portal-report.js'
 import { renderResources } from './resource-report.js'
+import { renderEarlyStop } from './early-stop-report.js'
 import { FIXTURES, ROOT, runOne, WORLDS, type FixtureName } from './run.js'
 import { MC_VERSION } from '../version.js'
 import { SERVER_PROPERTIES } from './server.js'
@@ -64,6 +65,8 @@ export type BatchOptions = {
   keepWorld?: boolean
   label?: string
   fixture?: FixtureName
+  /** Predeclared early-fail rules (evaluation.md §1, early-fail rules); default on for milestone B batches. */
+  earlyStop?: boolean
 }
 
 function stamp (): string {
@@ -96,6 +99,7 @@ export async function runBatch (o: BatchOptions): Promise<string> {
   const java = resolveJava(ROOT)
   const rev = codeRev()
   const target = SCENARIO_TARGET[o.scenario] ?? o.scenario
+  const earlyStop = o.earlyStop ?? target === 'B'
   const seeds: string[] = resumed
     ? resumed.seeds
     : o.set === 'replay'
@@ -103,14 +107,14 @@ export async function runBatch (o: BatchOptions): Promise<string> {
       : Array.from({ length: o.n }, () => freshSeed())
   if (!resumed) {
     mkdirSync(join(dir, 'private'), { recursive: true })
-    const options = { scenario: o.scenario, n: o.n, parallel: o.parallel, limitMs: o.limitMs, reasoner: o.reasoner, set: o.set, label: o.label, fixture: o.fixture, keepWorld: o.keepWorld }
+    const options = { scenario: o.scenario, n: o.n, parallel: o.parallel, limitMs: o.limitMs, reasoner: o.reasoner, set: o.set, label: o.label, fixture: o.fixture, keepWorld: o.keepWorld, earlyStop }
     writeFileSync(seedManifestPath(dir), JSON.stringify({ batchId, seedSet, seeds, options, writtenAt: new Date().toISOString() }, null, 1))
   }
   const meta = {
     batchId, seedSet, n: seeds.length, scenario: o.scenario, reasoner: o.reasoner, limitMin: o.limitMs / 60_000, target,
     codeRev: rev.rev, dirty: rev.dirty, mcVersion: MC_VERSION, java: java.version,
     server: { ...SERVER_PROPERTIES, ...(o.fixture ? FIXTURES[o.fixture].properties : {}) }, parallel: o.parallel,
-    startedAt: new Date().toISOString(), node: process.version, fixture: o.fixture ?? null,
+    startedAt: new Date().toISOString(), node: process.version, fixture: o.fixture ?? null, earlyStop,
   }
   const runIdOf = (i: number) => `${batchId}-r${String(i + 1).padStart(2, '0')}`
   let next = 0
@@ -135,7 +139,7 @@ export async function runBatch (o: BatchOptions): Promise<string> {
       console.log(`[${new Date().toISOString()}] run ${i + 1}/${seeds.length} ${runId} starting (port ${port})`)
       const s = await runOne({
         batchId, runId, runDir, seed: seeds[i]!, seedSet, scenario: o.scenario, reasoner: o.reasoner, limitMs: o.limitMs,
-        port, rngSeed: randomInt(0, 2 ** 31 - 1), target, keepWorld: o.keepWorld, codeRev: rev, registry, fixture: o.fixture, java,
+        port, rngSeed: randomInt(0, 2 ** 31 - 1), target, keepWorld: o.keepWorld, codeRev: rev, registry, fixture: o.fixture, java, earlyStop,
       })
       summaries[i] = s
       console.log(`[${new Date().toISOString()}] run ${runId}: ${s.outcome} (${s.outcomeReason}) ${target}=${s.milestones[target] ?? '–'}s deaths=${s.deaths.length} elapsed=${s.elapsedS}s nav=${s.nav.ok}/${s.nav.calls} artifacts=${s.artifacts.complete ? 'complete' : 'missing ' + s.artifacts.missing.join(',')}`)
@@ -190,7 +194,7 @@ export function writeBatchReport (batchId: string, metaOverride?: Record<string,
     reasoner: String(meta.reasoner), limitMin: meta.limitMin, date: String(meta.startedAt ?? ''), server: (meta.server ?? {}) as Record<string, string>,
     fixture: (meta.fixture as string | null) ?? null, mcVersion: meta.mcVersion as string | undefined, java: meta.java as string | undefined,
   }, agg, runs)
-  const extra = meta.scenario === 'b' ? `${renderPortal(dir, runs)}\n${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : meta.scenario === 'a' ? `${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : ''
+  const extra = meta.scenario === 'b' ? `${renderEarlyStop(dir, runs, { limitS: meta.limitMin * 60, enabled: meta.earlyStop === true })}\n${renderPortal(dir, runs)}\n${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : meta.scenario === 'a' ? `${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : ''
   const report = extra ? base.replace('## Skills', `${extra}\n## Skills`) : base
   writeFileSync(join(dir, 'report.md'), report)
   return report

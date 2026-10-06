@@ -6,6 +6,7 @@ import { milestoneBVerified, netherReadyInventory, parseDimension, parseInventor
 import { resolveJava, type JavaRuntime } from './java.js'
 import { terminate, waitExit, type ProcessRegistry } from './procs.js'
 import { MC_VERSION } from '../version.js'
+import { EarlyStopMonitor, JsonlTail, type EarlyStop } from './early-stop.js'
 import { ServerProcess } from './server.js'
 
 export const ROOT = resolve(new URL('../..', import.meta.url).pathname)
@@ -36,6 +37,8 @@ export type RunOptions = {
   username?: string
   /** Labeled fixture (evaluation.md §1): evaluator console setup, never scored. */
   fixture?: FixtureName
+  /** Apply the predeclared early-fail rules (evaluation.md §1, early-fail rules) while the run is live. */
+  earlyStop?: boolean
 }
 
 /**
@@ -117,6 +120,7 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
   let bot: ChildProcess | null = null
   let timedOut = false
   let hostSuspendedMs = 0
+  let earlyStop: EarlyStop | null = null
 
   const server = new ServerProcess({
     worldDir, port: o.port, seed: o.seed, jarPath: JAR, command: o.serverCommand, readyTimeoutMs: o.serverReadyTimeoutMs,
@@ -161,6 +165,11 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     const hardDeadline = botStarted + o.limitMs
     let serverDied = false
     server.once('exit', () => { serverDied = true })
+    // Early-fail rules read the bot's own event stream on the bot's clock (event `t`), so a
+    // live decision equals a replay of the same events.jsonl.
+    const monitor = o.earlyStop ? new EarlyStopMonitor({ limitS: o.limitMs / 1000 }) : null
+    const tail = monitor ? new JsonlTail(join(o.runDir, 'events.jsonl')) : null
+    let clockOffsetS: number | null = null
     // Wait for: bot result written, bot exit, server death, or the wall clock.
     // A gap in this 500 ms poll loop means the host itself was suspended (laptop sleep):
     // every process froze, and the bot's connection usually times out on wake.
@@ -176,6 +185,19 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
       if (bot.exitCode !== null || bot.signalCode !== null) break
       if (serverDied) break
       if (Date.now() >= hardDeadline) { timedOut = true; break }
+      if (monitor && tail) {
+        const evaluatorS = (Date.now() - botStarted) / 1000
+        for (const e of tail.read()) {
+          if (clockOffsetS === null && typeof e.t === 'number') clockOffsetS = Math.max(0, evaluatorS - e.t)
+          if ((earlyStop = monitor.feed(e))) break
+        }
+        if (!earlyStop && clockOffsetS !== null) earlyStop = monitor.check(evaluatorS - clockOffsetS)
+        if (earlyStop) {
+          recordGt({ t: since(), kind: 'early_stop', data: { ...earlyStop } })
+          writeFileSync(join(o.runDir, 'early_stop.json'), JSON.stringify(earlyStop, null, 1))
+          break
+        }
+      }
       await sleep(500)
     }
 
@@ -208,7 +230,7 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     }
 
     // Stop the bot: it writes a timeout bundle on SIGTERM if it had not finished.
-    const botGrace = timedOut ? 15_000 : 5_000
+    const botGrace = timedOut || earlyStop ? 15_000 : 5_000
     const ex = await terminate(bot, botGrace)
     botExit = { code: ex.code, signal: ex.signal }
     botRunS = Math.round((Date.now() - botStarted) / 100) / 10
@@ -234,6 +256,11 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     else outcomeReason ||= `bot_result.json invalid: ${parsed.error.issues[0]?.message}`
   } catch { /* missing */ }
 
+  if (!outcome && earlyStop && !(br && br.outcome === 'goal_reached')) {
+    // A scored failure: stays in the denominator, keeps its deaths (evaluation.md §1, early-fail rules).
+    outcome = 'early_fail'
+    outcomeReason = `early stop: ${earlyStop.rule} at ${earlyStop.atS}s (${earlyStop.stage})`
+  }
   if (!outcome) {
     if (br) {
       outcome = timedOut && br.outcome !== 'goal_reached' ? 'timeout' : br.outcome
@@ -291,6 +318,7 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
     artifacts: { complete: false, missing: [] },
     navbench: br?.navbench,
     portal: br?.portal,
+    ...(earlyStop && outcome === 'early_fail' ? { earlyStop: { ...earlyStop, savedS: Math.max(0, Math.round(o.limitMs / 1000 - earlyStop.atS)) } } : {}),
   }
   const missing = REQUIRED_ARTIFACTS.filter(f => !existsSync(join(o.runDir, f)))
   summary.artifacts = { complete: missing.length === 0, missing }

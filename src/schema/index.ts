@@ -243,7 +243,8 @@ export const BotConfigS = z.object({
 export type BotConfig = z.infer<typeof BotConfigS>
 
 // ── Run outcome / summaries (evaluation.md §1, §4) ────────────────────────
-export const OutcomeS = z.enum(['win', 'goal_reached', 'timeout', 'death_limit', 'unrecoverable', 'infra_error', 'intervened'])
+// early_fail: the evaluator stopped a scored run under a predeclared early-fail rule (evaluation.md §1, early-fail rules); a failure.
+export const OutcomeS = z.enum(['win', 'goal_reached', 'timeout', 'death_limit', 'unrecoverable', 'infra_error', 'intervened', 'early_fail'])
 export type Outcome = z.infer<typeof OutcomeS>
 
 export const NavBenchTrialS = z.object({
@@ -306,7 +307,7 @@ export type BotResult = z.infer<typeof BotResultS>
 
 export const GroundTruthS = z.object({
   t: z.number(),       // seconds since evaluator run start
-  kind: z.enum(['server_ready', 'join', 'leave', 'death', 'advancement', 'kick', 'moved_wrongly', 'inventory', 'position', 'server_error', 'fixture', 'dimension', 'portal_check']),
+  kind: z.enum(['server_ready', 'join', 'leave', 'death', 'advancement', 'kick', 'moved_wrongly', 'inventory', 'position', 'server_error', 'fixture', 'dimension', 'portal_check', 'early_stop']),
   data: z.record(z.string(), z.unknown()),
 })
 export type GroundTruth = z.infer<typeof GroundTruthS>
@@ -348,6 +349,14 @@ export const RunSummaryS = z.object({
   artifacts: z.object({ complete: z.boolean(), missing: z.array(z.string()) }),
   navbench: z.array(NavBenchTrialS).optional(),
   portal: z.object({ ow: Vec3S.nullable(), nether: Vec3S.nullable(), strategy: z.string().nullable() }).optional(),
+  /** Predeclared early-fail rule that ended the run (evaluation.md §1, early-fail rules); absent when none fired. */
+  earlyStop: z.object({
+    rule: z.enum(['objective_exhausted', 'controller_stall', 'impossible_remainder']),
+    atS: z.number(),
+    stage: z.string(),
+    evidence: z.record(z.string(), z.unknown()),
+    savedS: z.number(),
+  }).optional(),
 })
 export type RunSummary = z.infer<typeof RunSummaryS>
 
