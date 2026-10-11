@@ -74,7 +74,25 @@ export function unstickDirections (view: BlockView, feet: V3, yaw: number, attem
   const back: [number, number] = [0 - fwd[0], 0 - fwd[1]]
   const pref = attempt <= 1 ? fwd : back
   const order: [number, number][] = [pref, ...CARDINALS.filter(d => d[0] !== pref[0] || d[1] !== pref[1])]
-  return order.filter(d => stepHazard(view, feet, d) === null)
+  const safe = order.filter(d => stepHazard(view, feet, d) === null)
+  // Momentum can carry past the first cell: directions whose second cell is safe too come first
+  // (stable sort keeps the preference among them).
+  const next = (d: [number, number]): V3 => {
+    const [x, y, z] = feet.map(Math.floor) as V3
+    const solid = view.at(x + d[0], y, z + d[1]).kind === 'solid'
+    return [x + d[0], solid ? y + 1 : y, z + d[1]]
+  }
+  const ok2 = (d: [number, number]) => stepHazard(view, next(d), d) === null
+  return [...safe.filter(ok2), ...safe.filter(d => !ok2(d))]
+}
+
+/**
+ * Blocks the bot placed to come back to and never digs: the respawn bed, the kit chest (C round 2;
+ * ckit-r2 r01 dug up its own bed on a restock trip, and the next death respawned at world spawn) and
+ * obsidian (portal frames: a travel dig through one puts the portal out).
+ */
+export function isProtected (name: string | undefined): boolean {
+  return name === 'chest' || name === 'obsidian' || (name?.endsWith('_bed') ?? false)
 }
 
 /** True if digging this cell would open it to lava or water (never dig those in a reflex). */
@@ -112,7 +130,8 @@ export function safeCells (view: BlockView, feet: V3, r = 4): V3[] {
         const f = view.at(x, y, z); const h = view.at(x, y + 1, z)
         if ((f.kind !== 'air' && f.kind !== 'water') || (h.kind !== 'air' && h.kind !== 'water')) continue
         let lavaNear = false
-        for (const hy of [0, 1]) for (const [ax, az] of CARDINALS) if (view.at(x + ax, y + hy, z + az).kind === 'lava') lavaNear = true
+        // Fire beside the cell burns a body that is not centred (C smoke r01: fire after a ghast fireball).
+        for (const hy of [0, 1]) for (const [ax, az] of CARDINALS) { const k = view.at(x + ax, y + hy, z + az); if (k.kind === 'lava' || k.name === 'fire' || k.name === 'soul_fire') lavaNear = true }
         if (lavaNear) continue
         out.push({ c: [x, y, z], score: Math.hypot(dx, dz) - 0.3 * dy })
       }

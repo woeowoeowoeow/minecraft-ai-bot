@@ -8,8 +8,10 @@ export type WaterExit = {
   /** Water surface cell to swim to before climbing out. */
   from: V3
   /** 'flush': shore top is level with the water top (a plain jump out).
-   *  'ledge': shore is one block higher; the lip must be dug first (physics cannot climb it). */
-  kind: 'flush' | 'ledge'
+   *  'ledge': shore is one block higher; the lip must be dug first (physics cannot climb it).
+   *  'notch': a wall at least two blocks above the water (an iceberg): the lip and the cell above
+   *  it are dug, and the bot stands in the notch on the block level with the water top. */
+  kind: 'flush' | 'ledge' | 'notch'
   dist: number
 }
 
@@ -26,14 +28,25 @@ export function surfaceCell (view: BlockView, x: number, y: number, z: number): 
   return view.at(x, y, z).kind === 'water' && view.at(x, y + 1, z).kind === 'air'
 }
 
+/** Ice turns into water when broken over a solid or liquid block (1.16.1 IceBlock.afterBreak): never dug for an exit. */
+const MELTS = new Set(['ice', 'frosted_ice'])
+const diggable = (c: { kind: string; name: string; gravity: boolean; digMs: number }, maxMs: number) => c.kind === 'solid' && !c.gravity && !MELTS.has(c.name) && c.digMs <= maxMs
+
 /**
- * Shore exits within `radius` of `pos`, best first: flush exits before ledge
- * exits, then by distance. A ledge exit needs its lip (the shore block level
- * with the bot's head) to be diggable in reasonable time.
+ * Shore exits within `radius` of `pos`, best first: flush exits, then ledge exits, then notches,
+ * each by distance. A ledge exit needs its lip (the shore block level with the bot's head) to be
+ * diggable in reasonable time; a notch needs the lip and the block above it (an iceberg or snow
+ * wall rising two or more blocks above the water, ckit-r2d r01), no water or lava behind them,
+ * and nothing that falls into it.
  */
 export function findWaterExits (view: BlockView, pos: V3, radius = 12, maxLipDigMs = 1500): WaterExit[] {
   const out: WaterExit[] = []
   const [px, py, pz] = pos.map(Math.floor) as V3
+  const wetAround = (x: number, y: number, z: number, fromX: number, fromZ: number) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => {
+    if (x + dx! === fromX && z + dz! === fromZ) return false
+    const k = view.at(x + dx!, y, z + dz!).kind
+    return k === 'water' || k === 'lava'
+  })
   for (let dx = -radius; dx <= radius; dx++) {
     for (let dz = -radius; dz <= radius; dz++) {
       for (let dy = -3; dy <= 2; dy++) {
@@ -47,15 +60,25 @@ export function findWaterExits (view: BlockView, pos: V3, radius = 12, maxLipDig
           const dist = Math.hypot(dx, dz)
           if (standable(view, sx, y + 1, sz)) {
             out.push({ stand: [sx, y + 1, sz], from: [x, y, z], kind: 'flush', dist })
-          } else if (view.at(sx, y, sz).kind === 'solid' && view.at(sx, y + 1, sz).kind === 'solid' && standable(view, sx, y + 2, sz)) {
-            const lip = view.at(sx, y + 1, sz)
-            if (lip.digMs <= maxLipDigMs && view.at(x, y + 2, z).kind === 'air') out.push({ stand: [sx, y + 1, sz], from: [x, y, z], kind: 'ledge', dist })
+            continue
+          }
+          if (view.at(sx, y, sz).kind !== 'solid' || view.at(x, y + 2, z).kind !== 'air') continue
+          const lip = view.at(sx, y + 1, sz)
+          if (lip.digMs > maxLipDigMs) continue
+          if (standable(view, sx, y + 2, sz)) {
+            out.push({ stand: [sx, y + 1, sz], from: [x, y, z], kind: 'ledge', dist })
+            continue
+          }
+          const cap = view.at(sx, y + 2, sz)
+          if (diggable(lip, maxLipDigMs) && diggable(cap, maxLipDigMs) && !wetAround(sx, y + 1, sz, x, z) && !wetAround(sx, y + 2, sz, x, z) && !view.at(sx, y + 3, sz).gravity && view.at(sx, y + 3, sz).kind !== 'water' && view.at(sx, y + 3, sz).kind !== 'lava') {
+            out.push({ stand: [sx, y + 1, sz], from: [x, y, z], kind: 'notch', dist })
           }
         }
       }
     }
   }
-  out.sort((a, b) => (a.kind === b.kind ? a.dist - b.dist : a.kind === 'flush' ? -1 : 1))
+  const rank = { flush: 0, ledge: 1, notch: 2 } as const
+  out.sort((a, b) => (a.kind === b.kind ? a.dist - b.dist : rank[a.kind] - rank[b.kind]))
   return out
 }
 

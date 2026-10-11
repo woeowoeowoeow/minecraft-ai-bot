@@ -18,6 +18,8 @@ export interface Navigator {
   recent (): NavResult[]
   /** Get the head out of water (swim up or along the route to open air). False if it never clears. Survival reflex (P0). */
   surface (): Promise<boolean>
+  /** Out of the water at a reachable exit (wider search, notches into ice): the water trap escape. True when dry. */
+  escapeWater (signal: AbortSignal): Promise<boolean>
 }
 
 /** Contract timeout for `navigate` (architecture §6.3): 20 s + 1.5 s/block. */

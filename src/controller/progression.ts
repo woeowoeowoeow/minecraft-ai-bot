@@ -13,7 +13,7 @@ import type { SkillRunner } from '../skills/runner.js'
 import { failureSignature } from '../skills/runner.js'
 import type { Telemetry } from '../telemetry/telemetry.js'
 import { bestWeapon, capacity } from '../skills/survival/threat.js'
-import { Cooldowns, P, selectInterrupt, type Interrupt, type Priority } from './interrupts.js'
+import { Cooldowns, P, PORTAL_SKILLS, selectInterrupt, type Interrupt, type Priority } from './interrupts.js'
 import { deferAtNight, schedule, surfaceNight } from './schedule.js'
 
 export type ProgressionDeps = {
@@ -45,10 +45,11 @@ export type ProgressionResult = {
 export const LIMITS = { deaths: 5 }
 
 /** Cooldown (s) after an interrupt skill fails, per interrupt kind. */
-const INTERRUPT_COOLDOWN: Record<string, number> = { rest: 20, shelter: 60, hold: 10, defend: 20, flee: 15, cover: 10, forage: 120, pickup: 120, eat: 20, cook: 90, extinguish: 3, equip: 60, inventory: 90, surface: 2, suffocation: 2, escape_lava: 0, escape_fire: 0 }
+const INTERRUPT_COOLDOWN: Record<string, number> = { rest: 20, shelter: 60, hold: 10, defend: 20, flee: 15, cover: 10, forage: 120, pickup: 120, eat: 20, cook: 90, extinguish: 3, magma: 2, deflect: 2, equip: 60, inventory: 90, surface: 2, suffocation: 2, leave_portal: 1, water_escape: 3, escape_lava: 0, escape_fire: 0 }
 /** Interrupts whose cooldown is per target entity. */
 const PER_TARGET = new Set(['defend', 'flee', 'cover', 'forage'])
 /** An objective iteration shorter than this is followed by a pause (never a synchronous spin). */
+
 const MIN_ITERATION_MS = 250
 const MIN_INTERRUPT_MS = 50
 /** Seconds between holds in a sealed pocket. */
@@ -89,10 +90,14 @@ export class ProgressionController {
   private weakHoldLast = -Infinity
 
   constructor (private readonly d: ProgressionDeps) {
-    this.recovery = new Recovery(() => this.now())
+    this.recovery = new Recovery(() => this.now(), id => d.requirements.find(r => r.id === id)?.strategies)
     this.cooldowns = new Cooldowns(() => d.bus.now())
     d.bus.on(ev => {
       if (ev.type === 'death') { this.died = true; d.runner.cancel('death') }
+      // A portal crossing no skill asked for: the running skill's targets are in the other
+      // dimension (ckit-r2d r02: a sheep hunt went on in the Nether, digging toward Overworld
+      // coordinates). Stop it and re-plan from where the bot is.
+      if (ev.type === 'dimension_change' && ev.data.cause === 'portal' && !d.state().control.skillStack.some(x => PORTAL_SKILLS.has(x.skill))) d.runner.cancel('dimension')
       if (ev.type === 'cover' && !ev.data.step) this.lastCover = { t: ev.t, ok: Boolean(ev.data.ok), method: String(ev.data.method), why: String(ev.data.why) }
     })
   }
@@ -273,10 +278,32 @@ export class ProgressionController {
       const alt = nextObjective(this.d.requirements, this.d.state(), id => id === obj.id || this.recovery.isSuspended(id))
       if (!alt) {
         this.recovery.unsuspend(obj.id)
+        // Milestone C Nether work: the way back through the portal can be hundreds of blocks; the
+        // objective starts over in place (its own memory of searched and failed areas carries on).
+        if (this.d.requirements.find(r => r.id === obj.id)?.noRetreat && this.d.state().dim === 'the_nether') {
+          this.d.bus.emit('recovery_step', { level: 'L3', action: 'suspend_skipped', objective: obj.id, note: 'no other objective available; retrying in place (no retreat)' })
+          await this.runPreemptible('holdSafe', { ms: 3000 }, P.objective)
+          return
+        }
         this.d.bus.emit('recovery_step', { level: 'L3', action: 'suspend_skipped', objective: obj.id, note: 'no other objective available; relocating instead' })
         await this.relocate(obj)
       }
     }
+  }
+
+  /**
+   * A MISSING_RESOURCE that another requirement restocks (RequirementDef.resupply) is a
+   * hand-over, not a failure: true when that requirement is now offerable.
+   */
+  private resupplied (def: RequirementDef | undefined, f: Failure): string | null {
+    if (!def?.resupply || f.class !== 'MISSING_RESOURCE') return null
+    for (const m of f.missing ?? []) {
+      const by = def.resupply[m.item]
+      if (!by) continue
+      const s = this.d.state()
+      if (candidateObjectives(this.d.requirements, s, id => this.recovery.isSuspended(id)).some(o => o.id === by)) return by
+    }
+    return null
   }
 
   /**
@@ -364,10 +391,15 @@ export class ProgressionController {
         }
         const def = this.d.requirements.find(r => r.id === obj.id)
         const strat = this.recovery.strategy(obj.id)
-        const o: Objective = { ...obj, strategy: strat.id === 'default' || def?.bounded ? obj.strategy : strat.id, params: def?.bounded ? obj.params : { ...obj.params, ...strat.params } }
-        if (o.id !== current) {
+        // An objective with its own catalog (milestone C) runs the current strategy's skill and params.
+        const o: Objective = strat.own
+          ? { ...obj, skill: strat.skill ?? obj.skill, strategy: strat.id, params: { ...obj.params, ...strat.params } }
+          : { ...obj, strategy: strat.id === 'default' || def?.bounded ? obj.strategy : strat.id, params: def?.bounded ? obj.params : { ...obj.params, ...strat.params } }
+        // A new objective, or (own catalog) a new strategy for it: the event marks the switch.
+        const key = strat.own ? `${o.id}:${o.strategy}` : o.id
+        if (key !== current) {
           this.d.setObjective(o)
-          current = o.id
+          current = key
           bus.emit('objective', { id: o.id, skill: o.skill, params: o.params, strategy: o.strategy })
         }
         lastObjective = o
@@ -399,6 +431,12 @@ export class ProgressionController {
         }
 
         const failure = failed.failure!
+        const by = this.resupplied(def, failure)
+        if (by) {
+          bus.emit('recovery_step', { level: 'L2', action: 'resupply', objective: o.id, by, signature: failure.signature, note: failure.reason })
+          await this.pace(t0)
+          continue
+        }
         const action = this.recovery.handle(o, failure, { persistent: def?.persistent, bounded: def?.bounded, noRelocate: def?.noRelocate })
         const isNav = failure.class.startsWith('NAV_') || failure.class === 'STALLED' || failure.class === 'SKILL_TIMEOUT'
         const repeat = this.suppressRepeat(failure.signature)

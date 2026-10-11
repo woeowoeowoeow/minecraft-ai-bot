@@ -66,6 +66,21 @@ The evaluator verifies a claimed B on the server: the Nether-entry advancement (
 
 Runtime reasoning therefore stays disabled. `reasoner=none` is the B gate configuration, and the `model` vs `none` comparison is deferred until a provider is approved.
 
+## Milestone C predicate: exact reading (recorded 2026-10-06, before any C gate)
+
+`C` (`src/planner/milestones.ts` `milestoneC`) is first reached when all of the following hold. The gate is unchanged: 20 held-out seeds from a fresh spawn, ≥ 40 % reach C within 120 min, 0 interventions, the existing death limit (5 deaths end a run), `reasoner=none`.
+- **B first:** milestone B was reached earlier in the same run (its predicate as above).
+- **Items:** ≥ 7 `blaze_rod` and ≥ 14 `ender_pearl` in the inventory (`config/progression.json` `later`).
+- **Back in the Overworld:** the client is in the Overworld, and its latest dimension transition is a Nether → Overworld *portal* trip (not a death respawn) that followed a Nether entry made after B.
+
+The evaluator verifies a claimed C on the server: everything B checks (the `We Need to Go Deeper` advancement, `Dimension` = `minecraft:overworld` at the end, `execute if block` finds `nether_portal` at the built-portal cell the bot reports), plus ≥ 7 blaze rods and ≥ 14 ender pearls in `data get entity Bot Inventory`. A run that fails any of these is not a success.
+
+**Rule notes for C (no rule change).**
+- *Fortress search uses the 1.16.1 structure-placement grid.* The Nether places one structure attempt per 27 × 27-chunk region, with its start chunk in the region's first 23 × 23 chunks, and that attempt is either a fortress or a bastion. This is a fixed game rule (like "strongholds lie in rings" for D), not a seed lookup: the bot never computes where a start chunk is. It only uses which areas *could* hold one and which it has already seen in loaded chunks. The structure census (evaluation.md, milestone C) confirmed the rule on 20 fresh seeds. Fortresses are detected only from natural nether bricks in client-loaded chunk data.
+- *Blaze reach.* Attacks respect vanilla survival reach (3 blocks from the eye to the hitbox). The 1.16.1 server would accept up to 6 blocks; using that would be a reach hack.
+- *Bartering* is the vanilla interaction: use a gold ingot on an adult piglin (one ingot per use).
+- *Early-fail rules* (evaluation.md §1) were adopted and validated for milestone B batches only. C batches run without them (`earlyStop` defaults on for B only). Runs end on the existing terminal conditions or the 120-minute limit.
+
 ## Open items carried into A (resolved 2026-09-28)
 
 From the 1.16.1 migration. All are fixed as general causes (architecture §10.2, §10A):

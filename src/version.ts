@@ -126,14 +126,15 @@ export const ARMOR_POINTS: Record<string, number> = {
  * (endermen, spiders in daylight, polar bears), zombified piglins never.
  * No goats, wardens, breezes or bogged exist in 1.16.1.
  */
-export type MobThreat = { weight: number; range: number; explosive?: boolean; neutral?: boolean; ranged?: boolean }
+export type MobThreat = { weight: number; range: number; explosive?: boolean; neutral?: boolean; ranged?: boolean; avoid?: boolean }
 export const MOB_THREATS: Record<string, MobThreat> = {
   zombie: { weight: 1.0, range: 2 }, husk: { weight: 1.1, range: 2 }, zombie_villager: { weight: 1.0, range: 2 },
   drowned: { weight: 1.0, range: 2 }, // with a trident it is ranged: see threat.ts
   skeleton: { weight: 1.5, range: 15, ranged: true }, stray: { weight: 1.6, range: 15, ranged: true },
   spider: { weight: 1.2, range: 2, neutral: true }, cave_spider: { weight: 1.4, range: 2 },
   creeper: { weight: 2.5, range: 3, explosive: true },
-  enderman: { weight: 2.0, range: 2, neutral: true },
+  // Avoided when provoked (neutral: counts only within 3): 40 HP, 7 per hit (ckit9 r01: died in a 2-s `defend`).
+  enderman: { weight: 2.0, range: 2, neutral: true, avoid: true },
   witch: { weight: 1.6, range: 8, ranged: true },
   slime: { weight: 0.6, range: 2 }, phantom: { weight: 1.0, range: 2 },
   pillager: { weight: 1.6, range: 12, ranged: true }, vindicator: { weight: 2.5, range: 2 }, evoker: { weight: 2.5, range: 10, ranged: true },
@@ -143,13 +144,25 @@ export const MOB_THREATS: Record<string, MobThreat> = {
   polar_bear: { weight: 1.5, range: 2, neutral: true }, wolf: { weight: 1.0, range: 2, neutral: true },
   // Nether (milestone B): ghast fireballs and blaze fireballs are ranged; piglins are hostile
   // to a player without golden armor (threat.ts); zombified piglins stay neutral (never counted).
-  ghast: { weight: 2.0, range: 32, ranged: true }, blaze: { weight: 2.0, range: 16, ranged: true },
+  // A ghast shoots at a target within 64 blocks it can see (1.16.1 GhastShootFireballGoal, distanceToSqr < 4096).
+  // At 32 the observer never saw the shooter (C smoke 20261006 r01: two deaths, ghast 32–64 blocks off).
+  ghast: { weight: 2.0, range: 64, ranged: true }, blaze: { weight: 2.0, range: 16, ranged: true },
   // A large magma cube hits for 6 (dev1 r05: 20 → 0 HP while `defend` rated it 0.41).
-  wither_skeleton: { weight: 2.5, range: 2 }, magma_cube: { weight: 5.0, range: 2 },
+  wither_skeleton: { weight: 2.5, range: 2 }, magma_cube: { weight: 5.0, range: 2, avoid: true }, // avoided too (ckit6 r01: `defend` at 6.5 and 9.2 blocks, died)
   // A gold-sword piglin hits for ~8 at normal difficulty (smoke r02: 20 → 0 HP in 3 hits against
   // 4 armor points); hoglins hit as hard. Crossbow piglins are ranged (threat.ts).
-  piglin: { weight: 5.0, range: 2 }, hoglin: { weight: 5.0, range: 2 }, zoglin: { weight: 5.0, range: 2 },
+  // Hoglins and zoglins (40 HP, knock-up hits) are never fought, only avoided (ckit5 r01: the distance-
+  // scaled score chose `defend` at 7 blocks four times; the fourth was a death).
+  piglin: { weight: 5.0, range: 2 }, hoglin: { weight: 5.0, range: 2, avoid: true }, zoglin: { weight: 5.0, range: 2, avoid: true },
 }
+
+/**
+ * Ghast fire (milestone C). Ghasts and their fireballs are tracked to `range` (the shooting range);
+ * other entities stop at 32. A fireball flies straight at up to ~2 blocks a tick, a 1.16 shield
+ * blocks its hit and its explosion when raised toward it (≥ 5 ticks of use). Beyond `idleRange` a
+ * ghast is a threat only after it charged at the bot (`aggroS`): idle ghasts far off are left alone.
+ */
+export const GHAST = { range: 64, fireball: 'fireball', eye: 2.6, fireballWatch: 40, fireballClosing: 3, idleRange: 32, aggroS: 15 } as const
 
 /** Golden armor makes piglins neutral (1.16.1 `PiglinBrain.wearsGoldArmor`). */
 export const GOLDEN_ARMOR = new Set(['golden_helmet', 'golden_chestplate', 'golden_leggings', 'golden_boots'])
@@ -165,6 +178,16 @@ export const METADATA = {
   ageableBaby: 15,
   /** Creeper: swell direction (−1 idle, 1 swelling). */
   creeperSwell: 15,
+  /** Sheep: wool byte (colour in the low 4 bits, 0x10 sheared). */
+  sheepWool: 16,
+  /** Piglin (1.16.1, before AbstractPiglin): is_baby (boolean). Verified by the barter fixture. */
+  piglinBaby: 15,
+  /** Blaze: flags byte, 0x01 = charged (about to shoot). */
+  blazeFlags: 15,
+  /** Ghast: is_charging (boolean), set 10 ticks before the fireball leaves (1.16.1 GhastShootFireballGoal). */
+  ghastCharging: 15,
+  /** Enderman: screaming (boolean): angry at a player (1.16.1 EndermanEntity DATA_CREEPY, after carried block 15). Verified by tests/scenario/enderman-anger. */
+  endermanScreaming: 16,
 } as const
 
 /**

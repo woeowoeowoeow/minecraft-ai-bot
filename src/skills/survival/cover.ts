@@ -7,14 +7,16 @@ import type { Bot } from 'mineflayer'
 import { Vec3 } from 'vec3'
 import { z } from 'zod'
 import { HARMFUL_FLOOR, liveView, type BlockView } from '../../nav/blocks.js'
-import { CARDINALS, digReleasesLiquid } from '../../nav/hazards.js'
+import { CARDINALS, digReleasesLiquid, isProtected } from '../../nav/hazards.js'
 import type { EntityInfo, WorldState } from '../../observer/types.js'
 import type { V3 } from '../../schema/index.js'
-import { MOB_THREATS } from '../../version.js'
+import { GHAST, MOB_THREATS } from '../../version.js'
 import { dig, equipItem, withTimeout } from '../acts.js'
 import { sleep } from '../runner.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
-import { assessThreat, RANGED_MELEE_DIST, weakState } from './threat.js'
+import { wantsDeflect, shieldUp } from './ghast.js'
+import { GUARD_FIGHT, GUARD_FIGHT_MOBS, guardFight } from './hoglin.js'
+import { assessThreat, hasShield, menacing, RANGED_MELEE_DIST, weakState } from './threat.js'
 
 /** Mob eye height used for sight lines (skeleton 1.74, pillager and drowned 1.62). */
 const SHOOTER_EYE = 1.62
@@ -154,7 +156,7 @@ export type DigInResult = { ok: boolean; capped: boolean; pos: V3 | null; reason
  * exposed for about two dig times. Leaves an enclosed 1×2 pocket (body.enclosed);
  * the pathfinder can dig and tower back out with the dug blocks.
  */
-export async function digIn (ctx: SkillCtx, walkR: number): Promise<DigInResult> {
+export async function digIn (ctx: SkillCtx, walkR: number, between?: () => Promise<void>): Promise<DigInResult> {
   const bot = ctx.bot
   const start = ctx.state().pos
   const plan = planDigIn(liveView(bot), [Math.floor(start[0]), Math.floor(start[1] + 0.05), Math.floor(start[2])], walkR)
@@ -168,7 +170,9 @@ export async function digIn (ctx: SkillCtx, walkR: number): Promise<DigInResult>
   if (!(await centre(bot, plan.stand, ctx.signal))) return { ok: false, capped: false, pos: plan.stand, reason: 'could not centre' }
   for (const d of [1, 2, 3]) {
     ctx.checkAbort()
+    if (between) await between()
     const b = bot.blockAt(new Vec3(x, y - d, z), false)
+    if (b && isProtected(b.name)) return { ok: false, capped: false, pos: plan.stand, reason: `would dig ${b.name}` }
     if (b && b.boundingBox === 'block') await dig(bot, b, ctx.signal)
     const end = Date.now() + 1500
     while (Date.now() < end && !(bot.entity.onGround && bot.entity.position.y < y - d + 0.5)) await sleep(50, ctx.signal)
@@ -197,15 +201,16 @@ export async function digIn (ctx: SkillCtx, walkR: number): Promise<DigInResult>
 /** Ranged mobs that can reach the bot (within their range, a little beyond when out of sight). */
 export function shooters (s: WorldState): EntityInfo[] {
   return s.nearby.entities.filter(e => {
-    if (e.kind !== 'hostile') return false
+    if (!menacing(e, s)) return false
     const info = MOB_THREATS[e.name]
-    const ranged = Boolean(info?.ranged) || (e.name === 'drowned' && e.held === 'trident')
+    // Same reading as the threat score (threat.ts): a crossbow piglin shoots (ckit3 r01: 30 instant covers in 2 s).
+    const ranged = Boolean(info?.ranged) || (e.name === 'drowned' && e.held === 'trident') || (e.name === 'piglin' && e.held === 'crossbow')
     if (!ranged) return false
     return e.dist <= Math.max(info?.range ?? 12, 12) + (e.los === false ? 4 : 0)
   })
 }
 
-const eyeOf = (e: EntityInfo): V3 => [e.pos[0], e.pos[1] + SHOOTER_EYE, e.pos[2]]
+const eyeOf = (e: EntityInfo): V3 => [e.pos[0], e.pos[1] + (e.name === 'ghast' ? GHAST.eye : SHOOTER_EYE), e.pos[2]]
 
 async function raiseShield (bot: Bot, at: EntityInfo, ms: number, signal: AbortSignal): Promise<void> {
   await bot.lookAt(new Vec3(at.pos[0], at.pos[1] + SHOOTER_EYE, at.pos[2]), true)
@@ -215,7 +220,7 @@ async function raiseShield (bot: Bot, at: EntityInfo, ms: number, signal: AbortS
 
 const Params = z.object({ targetId: z.number().int().optional(), holdMs: z.number().int().positive().default(8000) })
 type P = z.infer<typeof Params>
-export type CoverMethod = 'none' | 'hidden' | 'enclosed' | 'terrain' | 'dig_in' | 'shield'
+export type CoverMethod = 'none' | 'hidden' | 'enclosed' | 'terrain' | 'dig_in' | 'shield' | 'guard_fight'
 
 /**
  * P1 response to shooters in sight: get out of their line of sight and stay out
@@ -229,7 +234,8 @@ export const cover: SkillDef<P, { method: CoverMethod; waitedMs: number }> = {
   level: 'survival',
   params: Params,
   preconditions: () => ({ ok: true }),
-  timeoutMs: () => 40_000,
+  // A guarded hoglin fight lasts up to GUARD_FIGHT.maxMs (A/B paths end well inside 40 s, as before).
+  timeoutMs: () => GUARD_FIGHT.maxMs + 30_000,
   stallMs: 20_000,
   async run (ctx, p) {
     const bot = ctx.bot
@@ -241,8 +247,11 @@ export const cover: SkillDef<P, { method: CoverMethod; waitedMs: number }> = {
     let hiddenSince = 0
     const report = (ok: boolean, why: string) => ctx.log('cover', { ok, method, why, ms: Date.now() - t0, hp: Math.round(ctx.state().vitals.health * 10) / 10, shooters: shooters(ctx.state()).map(e => `${e.name}@${Math.round(e.dist)}`) })
     try {
+      // Ghast fire is blocked here, between steps (the P0 reflex leaves a running cover alone).
+      const block = async () => { if (wantsDeflect(ctx.state())) { await shieldUp(ctx); method = method === 'none' ? 'shield' : method } }
       for (;;) {
         ctx.checkAbort()
+        await block()
         const s = ctx.state()
         if (s.body.enclosed) { if (method === 'none') method = 'enclosed'; report(true, 'enclosed'); return { method, waitedMs: Date.now() - t0 } }
         const sh = shooters(s)
@@ -250,8 +259,16 @@ export const cover: SkillDef<P, { method: CoverMethod; waitedMs: number }> = {
         if (!sh.length) {
           // Melee pressure on a weak bot (threat.ts `weak: dig in`): seal a pocket instead of running.
           const th = assessThreat(s)
-          if (!dug && s.inLiquid === 'none' && weakState(s) && th.mobs.some(m => !m.ranged && m.e.dist <= 10)) {
+          // Weak, or an avoided mob (hoglin, magma cube: never fought) closing in.
+          if (!dug && s.inLiquid === 'none' && (weakState(s) || th.mobs.some(m => MOB_THREATS[m.e.name]?.avoid && m.e.dist <= 10)) && th.mobs.some(m => !m.ranged && m.e.dist <= 10)) {
             dug = true
+            // Hoglins: a guarded fight with sword and shield (hoglin.ts); a dig-in under their
+            // knock-up hits does not finish (C dev batch 20261007-110334 r05, two deaths).
+            if (th.mobs.some(m => GUARD_FIGHT_MOBS.has(m.e.name) && m.e.dist <= 10) && hasShield(s) && s.vitals.health > GUARD_FIGHT.quitHp) {
+              const r = await guardFight(ctx)
+              ctx.log('cover', { ok: r.ok, method: 'guard_fight', why: r.reason, kills: r.kills, strikes: r.strikes, blocked: r.blocked, step: true, hp: Math.round(ctx.state().vitals.health * 10) / 10 })
+              if (r.ok) { method = 'guard_fight'; dug = false; continue }
+            }
             const r = await digIn(ctx, 1)
             ctx.log('cover', { ok: r.ok, method: 'dig_in', why: r.reason, capped: r.capped, step: true, vs: 'melee' })
             if (r.ok) { method = 'dig_in'; continue }
@@ -274,6 +291,14 @@ export const cover: SkillDef<P, { method: CoverMethod; waitedMs: number }> = {
         }
         hiddenSince = 0
         const feet: V3 = [Math.floor(s.pos[0]), Math.floor(s.pos[1] + 0.05), Math.floor(s.pos[2])]
+        // A ghast flies around terrain cover: only ghasts in sight → dig in first.
+        const ghastsOnly = seen.every(e => e.name === 'ghast')
+        if (ghastsOnly && !dug && s.inLiquid === 'none') {
+          dug = true
+          const r = await digIn(ctx, 1, block)
+          ctx.log('cover', { ok: r.ok, method: 'dig_in', why: r.reason, capped: r.capped, step: true, vs: 'ghast' })
+          if (r.ok) { method = 'dig_in'; continue }
+        }
         if (terrainTries < 2 && s.inLiquid === 'none') {
           terrainTries++
           const cells = findCoverCells(liveView(bot), feet, seen.map(eyeOf))
@@ -285,7 +310,7 @@ export const cover: SkillDef<P, { method: CoverMethod; waitedMs: number }> = {
         }
         if (!dug && s.inLiquid === 'none') {
           dug = true
-          const r = await digIn(ctx, 1)
+          const r = await digIn(ctx, 1, block)
           ctx.log('cover', { ok: r.ok, method: 'dig_in', why: r.reason, capped: r.capped, step: true })
           if (r.ok) { method = 'dig_in'; continue }
         }

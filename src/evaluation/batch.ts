@@ -11,6 +11,7 @@ import { renderSurvival } from './survival-report.js'
 import { renderPortal } from './portal-report.js'
 import { renderResources } from './resource-report.js'
 import { renderEarlyStop } from './early-stop-report.js'
+import { renderC } from './c-report.js'
 import { FIXTURES, ROOT, runOne, WORLDS, type FixtureName } from './run.js'
 import { MC_VERSION } from '../version.js'
 import { SERVER_PROPERTIES } from './server.js'
@@ -18,10 +19,10 @@ import { SERVER_PROPERTIES } from './server.js'
 export const RUNS = join(ROOT, 'runs')
 
 /** Gate time limits from milestones.md (seconds from bot spawn). */
-export const GATE_LIMIT_S: Record<string, number> = { M0: 600, A: 2700, B: 4200 }
+export const GATE_LIMIT_S: Record<string, number> = { M0: 600, A: 2700, B: 4200, C: 7200 }
 
 /** Batch target milestone per scenario. */
-export const SCENARIO_TARGET: Record<string, string> = { m0: 'M0', a: 'A', b: 'B', navbench: 'navbench' }
+export const SCENARIO_TARGET: Record<string, string> = { m0: 'M0', a: 'A', b: 'B', c: 'C', navbench: 'navbench' }
 
 /** Fresh 64-bit world seed from the OS CSPRNG (evaluation.md §2.1). */
 export function freshSeed (): string {
@@ -194,7 +195,9 @@ export function writeBatchReport (batchId: string, metaOverride?: Record<string,
     reasoner: String(meta.reasoner), limitMin: meta.limitMin, date: String(meta.startedAt ?? ''), server: (meta.server ?? {}) as Record<string, string>,
     fixture: (meta.fixture as string | null) ?? null, mcVersion: meta.mcVersion as string | undefined, java: meta.java as string | undefined,
   }, agg, runs)
-  const extra = meta.scenario === 'b' ? `${renderEarlyStop(dir, runs, { limitS: meta.limitMin * 60, enabled: meta.earlyStop === true })}\n${renderPortal(dir, runs)}\n${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : meta.scenario === 'a' ? `${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : ''
+  const extra = meta.scenario === 'c'
+    ? `${renderC(dir, runs)}\n${renderPortal(dir, runs)}\n${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}`
+    : meta.scenario === 'b' ? `${renderEarlyStop(dir, runs, { limitS: meta.limitMin * 60, enabled: meta.earlyStop === true })}\n${renderPortal(dir, runs)}\n${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : meta.scenario === 'a' ? `${renderResources(dir, runs)}\n${renderSurvival(dir, runs)}` : ''
   const report = extra ? base.replace('## Skills', `${extra}\n## Skills`) : base
   writeFileSync(join(dir, 'report.md'), report)
   return report

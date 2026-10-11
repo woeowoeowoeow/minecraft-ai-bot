@@ -8,6 +8,7 @@ import { Vec3 } from 'vec3'
 import type { EventBus } from '../observer/events.js'
 import type { V3 } from '../schema/index.js'
 import { HARMFUL_FLOOR, liveView, type BlockView, type Cell } from './blocks.js'
+import { isProtected } from './hazards.js'
 import { equipFor } from './tools.js'
 
 export type ExcavationTarget = { y: number; xz?: [number, number] }
@@ -336,7 +337,7 @@ export class Excavator {
           if (o.isAborted()) return false
           const b = bot.blockAt(new Vec3(...c), false)
           if (!b || b.boundingBox === 'empty') break
-          if (b.name === 'water' || b.name === 'lava') return false
+          if (b.name === 'water' || b.name === 'lava' || isProtected(b.name)) return false
           if (refills > 8) return false
           if (!(await this.dig(b, o))) return false
           await sleep(step.gravityAbove ? 250 : 50)

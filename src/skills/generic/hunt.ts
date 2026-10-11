@@ -85,6 +85,12 @@ function aquaticNear (bot: Bot): number {
   return n
 }
 
+/** A white, unsheared sheep (it drops white wool; a bed needs three of one colour). */
+export function whiteSheep (e: Entity): boolean {
+  const w = ((e as unknown as { metadata?: unknown[] }).metadata ?? [])[METADATA.sheepWool]
+  return e.name === 'sheep' && (w === undefined || w === null || (Number(w) & 0x1f) === 0)
+}
+
 function isBaby (e: Entity): boolean {
   return ((e as unknown as { metadata?: unknown[] }).metadata ?? [])[METADATA.ageableBaby] === true
 }
@@ -109,6 +115,7 @@ function pick (bot: Bot, p: P, isBlacklisted: (k: string) => boolean, shore: Blo
     if (!e.name || !p.mobs.includes(e.name) || !e.position || isBlacklisted(`mob:${e.id}`)) continue
     const fish = FISH.has(e.name)
     if (!fish && isBaby(e)) continue
+    if (p.item === 'white_wool' && !whiteSheep(e)) continue
     const feet = bot.blockAt(e.position.floored(), false)
     if (fish ? !nearSurface(bot, e.position) : feet?.name === 'water' || feet?.name === 'lava') continue
     if (risky(e)) continue

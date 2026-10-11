@@ -6,6 +6,7 @@ import { armorUpgrades, chooseFood, wantsShield } from '../food.js'
 import { surplus } from '../inventory.js'
 import { equipItem, waitFor, withTimeout } from '../acts.js'
 import { digIn } from './cover.js'
+import { menacing } from './threat.js'
 import { sleep } from '../runner.js'
 import { SkillFailure, type SkillDef } from '../types.js'
 
@@ -171,7 +172,7 @@ export const shelter: SkillDef<z.infer<typeof Shelter>, { waitedMs: number; capp
       ctx.checkAbort()
       const s = ctx.state()
       const night = s.vitals.timeOfDay >= NIGHT_SHELTER.start && s.vitals.timeOfDay < NIGHT_SHELTER.end
-      const near = s.nearby.entities.some(e => e.kind === 'hostile' && e.dist < p.near)
+      const near = s.nearby.entities.some(e => menacing(e, s) && e.dist < p.near)
       if (p.whileThreat ? !near : !night && (!near || p.untilDay)) break
       ctx.progress('sheltered', Date.now() - t0)
       await sleep(2000, ctx.signal)

@@ -60,11 +60,15 @@ async function relight (ctx: SkillCtx, loc: Location): Promise<boolean> {
 }
 
 /** Walk into the portal cell and stand still until the dimension changes (portal time is 4 s in survival). */
-async function stepIn (ctx: SkillCtx, cell: Vec3, from: string): Promise<boolean> {
+async function stepIn (ctx: SkillCtx, cells: Vec3[], from: string): Promise<boolean> {
   const bot = ctx.bot
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     ctx.checkAbort()
-    const r = await ctx.nav.goto({ kind: 'block', target: [cell.x, cell.y, cell.z], mode: 'walk' }, { timeoutMs: 20_000 })
+    // Walk first; then a path that may dig (never the frame: obsidian is protected) and the other
+    // portal cells (ckit-r2c r01: after mining beside its portal the bot stopped 1.5 blocks short,
+    // above the portal's floor, six times in a row and the re-entry was suspended).
+    const cell = cells[Math.min(cells.length - 1, attempt < 2 ? 0 : attempt - 1)]!
+    const r = await ctx.nav.goto({ kind: 'block', target: [cell.x, cell.y, cell.z], mode: attempt === 0 ? 'walk' : 'path' }, { timeoutMs: 20_000 })
     if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
     // The last half step by hand (the pathfinder may stop at the edge).
     const end = Date.now() + 2500
@@ -75,9 +79,68 @@ async function stepIn (ctx: SkillCtx, cell: Vec3, from: string): Promise<boolean
     }
     bot.clearControlStates()
     if (await waitFor(() => String(bot.game.dimension).replace('minecraft:', '') !== from, 9000, ctx.signal)) return true
+    const q = bot.entity.position
+    ctx.log('portal', { kind: 'step_in_failed', attempt, cell: [cell.x, cell.y, cell.z], at: [Math.round(q.x * 10) / 10, Math.round(q.y * 10) / 10, Math.round(q.z * 10) / 10], nav: r.ok ? 'ok' : r.class, feet: bot.blockAt(q.floored(), false)?.name ?? null })
     ctx.localRecovery('no teleport after standing in the portal')
   }
   return false
+}
+
+/** The trail is followed only from this far from the portal (B excursions stay well inside it). */
+export const TRAIL_FROM = 48
+
+/**
+ * Index of the trail point to resume from: the one nearest the portal (lowest index) among the
+ * points within 8 blocks of `me`, else the nearest point within 32. -1 when the bot is off the trail.
+ */
+export function trailIndex (points: V3[], me: V3): number {
+  const d = (q: V3) => Math.hypot(q[0] - me[0], q[1] - me[1], q[2] - me[2])
+  const close = points.findIndex(q => d(q) <= 8)
+  if (close >= 0) return close
+  let best = -1
+  for (let i = 0; i < points.length; i++) if (d(points[i]!) <= 32 && (best < 0 || d(points[i]!) < d(points[best]!))) best = i
+  return best
+}
+
+/**
+ * Milestone C: back toward the arrival portal along this visit's trail (observer memory.trail,
+ * loop-free), several points per leg while they lie within 40 blocks. The cells were walked
+ * or dug on the way out, so the pathfinder can take them again. False when off the trail or
+ * stuck on it; the caller then tries the direct route.
+ */
+export async function followTrail (ctx: SkillCtx, portal: V3): Promise<boolean> {
+  // A snapshot: walking back shortens the live trail (the observer erases the loop behind the bot).
+  const pts = [...(ctx.memory.trail?.points ?? [])]
+  if (pts.length < 2) return false
+  let fails = 0
+  let legs = 0
+  ctx.log('trail', { kind: 'start', points: pts.length, dist: Math.round(hdist(ctx.state().pos, portal)) })
+  for (let guard = 0; guard < 500; guard++) {
+    ctx.checkAbort()
+    const me = ctx.state().pos
+    if (hdist(me, portal) <= 24) break
+    const i = trailIndex(pts, me)
+    if (i < 0) { ctx.log('trail', { kind: 'off_trail', legs, fails }); return false }
+    if (i === 0) break
+    let j = i - 1
+    for (let k = i - 1; k >= Math.max(0, i - 12); k--) if (Math.hypot(pts[k]![0] - me[0], pts[k]![1] - me[1], pts[k]![2] - me[2]) <= 40) j = k
+    // The navigator's own strategy first (the way out was often walked by controlled excavation
+    // under the Nether's roof), then the pathfinder; then the next point only.
+    let r = await ctx.nav.goto({ kind: 'near', target: pts[j]!, range: 2 }, { profile: 'nether_travel', timeoutMs: 45_000 })
+    if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
+    if (!r.ok) {
+      r = await ctx.nav.goto({ kind: 'near', target: pts[j]!, range: 2, mode: 'path' }, { profile: 'nether_travel', timeoutMs: 45_000 })
+      if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
+    }
+    if (!r.ok && j !== i - 1) {
+      r = await ctx.nav.goto({ kind: 'near', target: pts[i - 1]!, range: 1.5 }, { profile: 'nether_travel', timeoutMs: 30_000 })
+      if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
+    }
+    legs++
+    if (r.ok) { fails = 0; ctx.progress('trail', pts.length - j) } else if (++fails >= 3) { ctx.log('trail', { kind: 'stuck', legs, at: i }); return false }
+  }
+  ctx.log('trail', { kind: 'done', legs, dist: Math.round(hdist(ctx.state().pos, portal)) })
+  return true
 }
 
 /** Step off the portal to a safe cell nearby, so the bot is not sent straight back. */
@@ -110,7 +173,8 @@ export const usePortal: SkillDef<UseP, { from: string; to: string; ms: number; a
     if (!exitPortal(s)) return { ok: false, cls: 'PRECONDITION_FAILED', reason: s.dim === 'overworld' ? 'no built portal remembered' : 'no Nether portal remembered' }
     return { ok: true }
   },
-  timeoutMs: () => 4 * 60_000,
+  // Milestone C walks back from a fortress hundreds of blocks away: 1.5 s per block beyond TRAIL_FROM.
+  timeoutMs: (s) => { const l = exitPortal(s); return 4 * 60_000 + (l ? 1500 * Math.max(0, hdist(l.pos, s.pos) - TRAIL_FROM) : 0) },
   stallMs: 60_000,
   async run (ctx, p) {
     const t0 = Date.now()
@@ -118,6 +182,7 @@ export const usePortal: SkillDef<UseP, { from: string; to: string; ms: number; a
     const from = s.dim
     const loc = exitPortal(s)!
     ctx.log('portal', { kind: 'use_start', from, to: p.to, portal: loc.pos, dist: Math.round(hdist(loc.pos, s.pos)) })
+    if (from === 'the_nether' && hdist(loc.pos, s.pos) > TRAIL_FROM) await followTrail(ctx, loc.pos)
     if (hdist(loc.pos, s.pos) > 3 || Math.abs(loc.pos[1] - s.pos[1]) > 2) {
       // Out of a mine by the dug staircase first when the portal is well above (see portal.ts surfaceFor).
       if (s.body.covered && s.dim === 'overworld' && loc.pos[1] > s.pos[1] + 10 && hdist(loc.pos, s.pos) > 24) await toSurface(ctx)
@@ -146,8 +211,8 @@ export const usePortal: SkillDef<UseP, { from: string; to: string; ms: number; a
     }
     // Enter at the lowest portal cell nearest the bot.
     const me = ctx.bot.entity.position
-    const cell = [...cells].sort((a, b) => a.y - b.y || a.distanceTo(me) - b.distanceTo(me))[0]!
-    const moved = await stepIn(ctx, cell, from)
+    const order = [...cells].sort((a, b) => a.y - b.y || a.distanceTo(me) - b.distanceTo(me))
+    const moved = await stepIn(ctx, order, from)
     if (!moved) throw new SkillFailure('STATE_INCONSISTENT', 'stood in the portal but the dimension did not change', { key: `step=teleport|dim=${from}` })
     ctx.progress('teleported', 1)
     await Promise.race([ctx.bot.waitForChunksToLoad(), sleep(20_000, ctx.signal)]).catch(() => {})

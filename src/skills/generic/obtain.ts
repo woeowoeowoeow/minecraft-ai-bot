@@ -30,6 +30,7 @@ export function hintsFrom (s: WorldState): Hints {
     tableNear: near('crafting_table', 20),
     furnaceNear: near('furnace', 20),
     coalOreKnown: (s.nearby.interestBlocks.coal_ore ?? []).length > 0 || (s.inventory.coal ?? 0) > 0,
+    ...(s.dim === 'the_nether' ? { nether: true } : {}),
   }
 }
 

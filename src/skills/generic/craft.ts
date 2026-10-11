@@ -160,9 +160,12 @@ export const craft: SkillDef<P, { crafted: number }> = {
     await resyncAndCheck(ctx, 'before_craft')
     const start = count()
     let table: Block | null = null
+    // Gives up after 4 rounds without progress; rounds that craft something do not count (mineflayer
+    // may craft only part of a large batch per call: 24 gold ingots from nuggets, ckit2 r01).
+    let stale = 0
     for (let round = 0; count() < p.count; round++) {
       ctx.checkAbort()
-      if (round >= 4) throw new SkillFailure('STATE_INCONSISTENT', 'crafting made no progress', { key: `item=${p.item}` })
+      if (stale >= 4 || round >= 64) throw new SkillFailure('STATE_INCONSISTENT', 'crafting made no progress', { key: `item=${p.item}` })
       const item = bot.registry.itemsByName[target()]!
       table = nearbyTable(bot)
       let recipe = bot.recipesFor(item.id, null, 1, table)[0]
@@ -193,7 +196,7 @@ export const craft: SkillDef<P, { crafted: number }> = {
       // Inventory updates can trail the craft promise; then trust only the server's view.
       await waitFor(() => count() > before, 1500, ctx.signal)
       await resyncAndCheck(ctx, 'after_craft')
-      if (count() > before) ctx.progress('crafted', count() - start)
+      if (count() > before) { ctx.progress('crafted', count() - start); stale = 0 } else stale++
     }
     return { crafted: count() - start }
   },

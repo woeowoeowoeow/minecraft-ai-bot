@@ -2,8 +2,12 @@ import type { Dim, Objective, V3 } from '../schema/index.js'
 
 export type EntityInfo = {
   id: number; name: string; kind: 'hostile' | 'passive' | 'player' | 'item' | 'other'; pos: V3; dist: number
-  /** Clear line of sight from the bot's eyes (computed for mobs within 24 blocks). */
+  /** Clear line of sight from the bot's eyes (computed for mobs within 24 blocks, and ghasts). */
   los?: boolean
+  /** Ghast charging a fireball (it leaves about half a second later). */
+  charging?: boolean
+  /** Ghast that charged at the bot within GHAST.aggroS (it is shooting at the bot), or a screaming (angry) enderman. */
+  aggro?: boolean
   /** Ageable baby (drops nothing). */
   baby?: boolean
   /** Creeper swelling (about to explode). */
@@ -20,6 +24,9 @@ export type EntityInfo = {
 export type Hazard = { kind: 'lava' | 'fire' | 'void' | 'water'; pos: V3; dist: number }
 
 export type LocationKind = 'spawn' | 'bed' | 'crafting_table' | 'furnace' | 'chest' | 'lava_pool' | 'village' | 'death' | 'mine_entry' | 'ruined_portal' | 'animals' | 'portal_ow' | 'portal_nether' | 'portal_site' | 'trees'
+  // Milestone C (Nether, client-visible blocks and entities only): structures seen in loaded chunks,
+  // blaze spawners inside nether bricks, and where piglins and endermen were seen.
+  | 'fortress' | 'blaze_spawner' | 'bastion' | 'piglins' | 'endermen'
 export type Location = {
   kind: LocationKind; dim: Dim; pos: V3; confidence: number; source: 'observed' | 'built'; lastSeen: number
   /** Kind-specific facts, e.g. a lava pool's source-block count. */
@@ -46,6 +53,36 @@ export type WorldMemory = {
   excursions: { t: number; dist: number; portal: V3 }[]
   /** Regions searched per resource without result (B round 3). Optional: older snapshots and fixtures lack it. */
   searched?: SearchedRegion[]
+  /**
+   * Milestone C: where the bot has stood during the current Nether visit, from the arrival
+   * portal on, loop-free (a point that comes back within reach of an earlier one cuts the
+   * loop). The way back to the portal is this trail reversed.
+   */
+  trail?: { since: number; points: V3[] }
+  /** Milestone C: Nether directions that failed (search legs), avoided for a while. */
+  netherFailed?: { pos: V3; heading: number; t: number }[]
+  /**
+   * Milestone C replacement kit: a chest the bot filled beside its Overworld portal before the
+   * Nether work (`items` = what it holds, as last deposited or withdrawn), for a cheap re-kit after a death.
+   */
+  stash?: { pos: V3; items: Record<string, number>; t: number }
+  /**
+   * Milestone C staging attempts per optional component (`bed`, `stash`): the skills count their
+   * own runs, and the policy stops offering a component after its bound (C.stageTries).
+   */
+  cStage?: { tries: Record<string, number> }
+  /** Milestone C gold and barter bookkeeping (the policy's adaptive pearl budget reads it). */
+  cLedger?: CLedger
+}
+
+/**
+ * Gold in and out during C: ingots handed to piglins, pearls and fire resistance that came back,
+ * gold gained per source (ingot equivalents), and seconds spent mining nether gold ore.
+ */
+export type CLedger = {
+  given: number; pearls: number; refused: number; tossed: number; potions: number
+  gold: { ore: number; bastionBlock: number; chest: number }
+  oreS: number
 }
 
 /** Architecture §8.1 — M0 subset (no recovery state yet). */
@@ -89,5 +126,11 @@ export type BodyState = {
   covered: boolean
   /** Feet and head cells walled in on all four sides and roofed: no mob can reach or see the bot (a sealed dig-in). */
   enclosed?: boolean
+  /** Block under the feet (milestone C: magma floors burn). */
+  floor?: string
+  /** Fire in any cell the bot's hitbox overlaps at feet or head level (feet/head read only the centre column). */
+  inFire?: boolean
+  /** The hitbox overlaps a nether_portal cell at feet or head level. */
+  inPortal?: boolean
 }
 export type ToolInfo = { name: string; slot: number; remaining: number; max: number }

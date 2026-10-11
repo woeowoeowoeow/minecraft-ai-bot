@@ -1,10 +1,10 @@
 import progression from '../../config/progression.json' with { type: 'json' }
-import type { WorldState } from '../observer/types.js'
+import type { CLedger, Location, WorldState } from '../observer/types.js'
 import type { Objective } from '../schema/index.js'
 import { GOLDEN_ARMOR, toolTier } from '../version.js'
-import { builtPortal, cookedCount, excursionDone, ironArmorPieces, lavaPoolKnown, milestoneB, netherReady, returnOk } from './milestones.js'
+import { bDone, builtPortal, cEntries, cookedCount, excursionDone, fortressKnown, ironArmorPieces, lavaPoolKnown, milestoneB, milestoneC, netherReady, pearlCount, pearlsDone, returnOk, rodsDone } from './milestones.js'
 import { cookableRaw, EMERGENCY, foodItems, hasEmergencyFood } from '../skills/food.js'
-import { countOf } from '../skills/sources.js'
+import { countOf, planObtain } from '../skills/sources.js'
 
 /**
  * A requirement in the ordered progression list (architecture §5.1). The list
@@ -31,9 +31,25 @@ export type RequirementDef = {
    * night of nearly every re-gate run sheltered ~480 s with only the food hunt left).
    */
   filler?: boolean
+  /**
+   * Strategy catalog for Recovery's L3 (architecture §5.1): the objective's own ordered
+   * strategies, each optionally run by a different skill (milestone C: bartering, then
+   * enderman hunting). Without one, Recovery's generic `default`/`wide` catalog applies.
+   */
+  strategies?: Strategy[]
+  /**
+   * Items another requirement restocks (item → requirement id). A MISSING_RESOURCE for one of
+   * them hands the turn to that requirement instead of climbing the ladder (milestone C: the
+   * barter runs out of gold, the gold requirement mines more).
+   */
+  resupply?: Record<string, string>
+  /** Nether objectives of milestone C: a strategy exhaustion with nothing else to do retries in place, never retreats through the portal. */
+  noRetreat?: boolean
   met (s: WorldState): boolean
   objective (s: WorldState): Omit<Objective, 'id' | 'milestone'>
 }
+
+export type Strategy = { id: string; params?: Record<string, unknown>; skill?: string }
 
 const inv = (s: WorldState, pred: (n: string) => boolean) =>
   Object.entries(s.inventory).reduce((n, [k, v]) => (pred(k) ? n + v : n), 0)
@@ -252,7 +268,9 @@ function afterA (r: RequirementDef): RequirementDef {
   return { ...r, met: s => (aDone(s) && !KEEP_AFTER_A.has(r.id)) || (s.dim !== 'overworld') || r.met(s) }
 }
 
-const tripDone = (s: WorldState) => milestoneB(s)
+// Once B is recorded it stays done (milestone C goes back into the Nether, where milestoneB's
+// return_ok no longer holds; B runs end the moment B is recorded, so their behaviour is unchanged).
+const tripDone = (s: WorldState) => s.milestones.B != null || milestoneB(s)
 const portalReady = (s: WorldState) => builtPortal(s) !== null
 /** Portal casting kit needed only until the portal stands. */
 const kitNeeded = (s: WorldState) => !tripDone(s) && !portalReady(s) && s.dim === 'overworld' && n(s, 'obsidian') < A.obsidian
@@ -287,4 +305,297 @@ export const B_MILESTONES: Record<string, (s: WorldState) => boolean> = {
   M0: hasTable,
   A: netherReady,
   B: milestoneB,
+}
+
+// ── Milestone C: fortress, blaze rods, ender pearls, back in the Overworld (milestones.md) ──
+// After B the bot prepares a small Overworld kit (food, crafting table, pickaxe durability for
+// Nether mining, a shield), stages a replacement kit and a bed at its portal, re-enters, and works
+// in the Nether by opportunity (architecture §10G): a fortress already seen → blaze rods first; a
+// bastion seen → its gold and pearls first; neither → a structure search, and whichever turns up
+// first is used. Gold comes from the bastion where there is one (nether gold ore otherwise), in
+// small batches bartered at once, until 14 pearls. Everything is state-based: a death or an
+// accidental portal trip re-plans from the inventory.
+const C = progression.C
+const LATER = progression.later
+
+/** Remaining durability of every pickaxe carried (any tier: nether gold ore and netherrack take a wooden one). */
+export function anyPickDurability (s: WorldState): number {
+  return s.tools.filter(t => t.name.endsWith('_pickaxe')).reduce((a, t) => a + t.remaining, 0)
+}
+
+/** Fire resistance potions held (barter is the bot's only potion source). */
+export const fireResHeld = (s: WorldState) => n(s, 'potion') + n(s, 'splash_potion')
+/** Bartering still wanted: pearls short, or the rods ahead and no fire resistance yet. */
+const needBarter = (s: WorldState) => !pearlsDone(s) || (!rodsDone(s) && fireResHeld(s) === 0)
+
+/** Still short of rods or pearls (the C trip is not done). */
+export const cNeed = (s: WorldState) => !rodsDone(s) || !pearlsDone(s)
+const inNether = (s: WorldState) => s.dim === 'the_nether'
+/** Overworld preparation applies: after B, before the C kit is complete, in the Overworld. */
+const owPrep = (s: WorldState) => bDone(s) && s.dim === 'overworld' && cNeed(s) && !milestoneC(s)
+const netherWork = (s: WorldState) => bDone(s) && inNether(s)
+const hd = (a: readonly number[], b: readonly number[]) => Math.hypot(a[0]! - b[0]!, a[2]! - b[2]!)
+
+/** Piglins seen in the Nether recently (observer spots): gold is worth mining. */
+export function piglinsKnown (s: WorldState): boolean {
+  return s.memory.locations.some(l => l.kind === 'piglins' && l.dim === 'the_nether' && s.t - l.lastSeen <= C.piglinMemoryS)
+}
+
+/** The first Nether entry of the C trip (after B), in bus seconds, or null. */
+export function firstCEntry (s: WorldState): number | null {
+  return cEntries(s)[0]?.t ?? null
+}
+
+/** A death after the C trip began. */
+export function cDeath (s: WorldState): boolean {
+  const t0 = firstCEntry(s)
+  return t0 !== null && s.memory.deaths.some(d => d.t > t0)
+}
+
+/**
+ * A death after B: the re-kit restores only the minimum safe Nether kit, whether the death came in
+ * the Nether or in the Overworld before the first entry (ckit-r2d r01: an Overworld death during
+ * the staging rebuilt the full C kit, 2 tables, pickaxes to 600 and a shield from new iron, for 3 200 s).
+ */
+export function rekit (s: WorldState): boolean {
+  const b = s.milestones.B
+  return b != null && s.memory.deaths.some(d => d.t > b)
+}
+
+/**
+ * The bastion worth working: seen in this run, within C.bastionRadius of a remembered Nether
+ * portal, not marked exhausted (no gold block or chest left in reach) and not set aside as
+ * unreachable for now. Nearest to the bot first.
+ */
+export function usableBastion (s: WorldState): Location | null {
+  const portals = s.memory.locations.filter(l => l.kind === 'portal_nether' && l.dim === 'the_nether')
+  return s.memory.locations
+    .filter(l => l.kind === 'bastion' && l.dim === 'the_nether' && l.detail?.exhausted !== true && Number(l.detail?.unreachableUntil ?? 0) <= s.t &&
+      (!portals.length || portals.some(p => hd(p.pos, l.pos) <= C.bastionRadius)))
+    .sort((a, b) => hd(a.pos, s.pos) - hd(b.pos, s.pos))[0] ?? null
+}
+
+const NO_LEDGER: CLedger = { given: 0, pearls: 0, refused: 0, tossed: 0, potions: 0, gold: { ore: 0, bastionBlock: 0, chest: 0 }, oreS: 0 }
+export const ledger = (s: WorldState): CLedger => s.memory.cLedger ?? NO_LEDGER
+
+/** Gold sources spent: no bastion left to work, and nether gold ore mined for C.oreBudgetS already. */
+export const goldExhausted = (s: WorldState) => !usableBastion(s) && ledger(s).oreS >= C.oreBudgetS
+/** Bartering clearly unproductive: C.barterCap ingots handed over and the pearls still short. */
+export const barterUnproductive = (s: WorldState) => ledger(s).given >= C.barterCap && !pearlsDone(s)
+/** Pearls from endermen instead (the existing alternate): gold spent or unproductive, none left in hand. */
+export const pearlsByEndermen = (s: WorldState) => !pearlsDone(s) && (goldExhausted(s) || barterUnproductive(s)) && n(s, 'gold_ingot') === 0
+
+/**
+ * Opportunity-based C order (architecture §10G), deterministic from what the bot has seen:
+ * `rods` while a fortress is known and the pearls are not done (a fortress seen during B is
+ * used at once); `pearls` when a usable bastion is known or the rods are done; `search` when
+ * neither structure is known (the region search stops at the first fortress or bastion).
+ */
+export type CRoute = 'rods' | 'pearls' | 'search' | 'return'
+export function cRoute (s: WorldState): CRoute {
+  if (rodsDone(s) && pearlsDone(s)) return 'return'
+  if (rodsFirst(s)) return 'rods'
+  if (!pearlsDone(s) && (rodsDone(s) || usableBastion(s))) return 'pearls'
+  if (pearlsDone(s)) return 'rods'
+  return 'search'
+}
+
+/** Fortress-first route: a fortress is known and neither rods nor pearls are done. */
+export const rodsFirst = (s: WorldState) => !rodsDone(s) && !pearlsDone(s) && fortressKnown(s)
+/**
+ * Fortress-first, but a fire resistance potion first when a gold source is known and none is held:
+ * without one the blaze fixture died at the spawner every time (0 kills, 2 of 2 isolated runs on
+ * 2026-10-08, 4 of 5 during development). Bartering stops at the potion; every ingot also rolls pearls.
+ */
+export const fireResFirst = (s: WorldState) => rodsFirst(s) && fireResHeld(s) === 0 && (piglinsKnown(s) || !!usableBastion(s)) && !goldExhausted(s) && !barterUnproductive(s)
+
+/**
+ * Gold ingots wanted before the next barter round: the expected need for the pearls still
+ * missing (1.16.1 table: 20/423 per ingot, 4–8 pearls), capped at one small batch so bartering
+ * starts early and a lucky run stops early (c-dev1: ~50 ingots mined before the first trade).
+ */
+export function goldWant (s: WorldState): number {
+  const missing = Math.max(0, LATER.ender_pearls - pearlCount(s))
+  // Pearls done, fire resistance still wanted: one fire resistance roll is 20/423 per ingot.
+  if (!missing) return needBarter(s) ? C.goldBatch : 0
+  return Math.max(1, Math.min(C.goldBatch, Math.ceil((missing / C.pearlsPerIngot) * C.pearlMargin)))
+}
+
+/** Stone pickaxes needed on top of those carried to reach the C pickaxe durability. */
+function cPickaxes (s: WorldState, target: number): number {
+  return n(s, 'stone_pickaxe') + Math.max(1, Math.ceil((target - anyPickDurability(s)) / STONE_PICKAXE_USES))
+}
+
+// ── C death recovery (architecture §10G): a replacement kit and a bed at the Overworld portal ──
+/** Golden armor pieces carried or worn. */
+const goldPieces = (s: WorldState) => Object.keys(s.inventory).reduce((a, k) => a + (GOLDEN_ARMOR.has(k) ? n(s, k) : 0), 0)
+/** The replacement kit is staged once, before the first C entry. */
+export const stashPending = (s: WorldState) => !s.memory.stash && firstCEntry(s) === null
+const stashItems = (s: WorldState) => Object.values(s.memory.stash?.items ?? {}).reduce((a, v) => a + v, 0)
+/** Died since the kit was staged, with the kit still in its chest: take it before anything else. */
+export function unstashWanted (s: WorldState): boolean {
+  const st = s.memory.stash
+  return !!st && s.dim === 'overworld' && bDone(s) && cNeed(s) && stashItems(s) > 0 && s.memory.deaths.some(d => d.t > st.t)
+}
+/** Planks a chest takes. */
+export const CHEST_PLANKS = 8
+/** A bed the bot set its respawn point at, beside the built portal (1.16.1: verified by fixture). */
+export function bedSet (s: WorldState): boolean {
+  const portal = builtPortal(s)
+  return !!portal && s.memory.locations.some(l => l.kind === 'bed' && l.dim === 'overworld' && l.detail?.set === true && hd(l.pos, portal.pos) <= C.bedNear + 2)
+}
+
+// ── C staging (after ckit-r2d): required items, and optional ones only where they are cheap ──
+// Measured over ckit-r2 … r2d (B → first C entry 347–1 362 s): the spare golden boots cost 103–706 s
+// in every run, the second table and the kit wood were wood trips, and all three Overworld deaths of
+// the staging came on those wood trips (each cost the whole iron kit). Required for a safe C entry:
+// food, one crafting table, pickaxe durability, a shield, a golden armor piece. Optional (the bed, the
+// replacement kit, a second table, a spare golden piece): offered only before the first entry, within
+// C.stageWindowS of B, from what is carried (a craft, never a gather or a mine), wood from a natural
+// tree within C.stageWoodR at most, and C.stageTries attempts per skill.
+/** Every step of obtaining `count` × item is a craft from the carried inventory (no gather, mine, smelt or hunt). */
+export function craftOnly (s: WorldState, item: string, count: number): boolean {
+  if (countOf(s.inventory, item) >= count) return true
+  try { return planObtain(item, count, s.inventory).steps.every(st => st.kind === 'craft') } catch { return false }
+}
+/** Optional staging is open: before the first C entry, no death since B, within the window after B. */
+export function stageOpen (s: WorldState): boolean {
+  const b = s.milestones.B
+  return b != null && stashPending(s) && !rekit(s) && s.t - b <= C.stageWindowS
+}
+const stageTries = (s: WorldState, k: string) => s.memory.cStage?.tries[k] ?? 0
+/** The bed is worth it only when the world spawn is far from the portal (or far above or below it). */
+function bedUseful (s: WorldState): boolean {
+  const portal = builtPortal(s)
+  const spawn = s.memory.locations.find(l => l.kind === 'spawn' && l.dim === 'overworld')
+  if (!portal) return false
+  if (!spawn) return true
+  return hd(portal.pos, spawn.pos) > C.bedSpawnFar || Math.abs(portal.pos[1] - spawn.pos[1]) > 10
+}
+/** A bed carried, or one craftable from carried wool and planks. */
+const bedAtHand = (s: WorldState) => hasBed(s) || craftOnly(s, 'white_bed', 1)
+/** Bed: wanted while staging is open, useful, and within its attempts. */
+export const bedOffer = (s: WorldState) => stageOpen(s) && !bedSet(s) && bedUseful(s) && stageTries(s, 'bed') < C.stageTries
+/** The replacement kit chest: a chest or its planks carried, within its attempts. */
+export const stashOffer = (s: WorldState) => stageOpen(s) && stageTries(s, 'stash') < C.stageTries && (n(s, 'chest') > 0 || planksEq(s) >= CHEST_PLANKS)
+/** Kit wood: short of a chest's planks, a known natural tree near (collect `local`: no search, no far scan). */
+const stashWoodOffer = (s: WorldState) => stageOpen(s) && stageTries(s, 'stash') < C.stageTries && n(s, 'chest') === 0 && planksEq(s) < CHEST_PLANKS
+const hasBed = (s: WorldState) => Object.keys(s.inventory).some(k => k.endsWith('_bed') && n(s, k) > 0)
+const armed = (s: WorldState) => Object.keys(s.inventory).some(k => k.endsWith('_sword') && n(s, k) > 0)
+const ironHeld = (s: WorldState) => n(s, 'iron_ingot') + n(s, 'iron_ore')
+
+const NETHER_FLAGS = { noRelocate: true, noRetreat: true } as const
+
+// The spawner camp only with fire resistance (a spawner keeps 3–6 blazes in sight; without the potion
+// the fixture never got a kill there); without it the fortress floors first, where blazes come singly.
+const rodsObjective = (s: WorldState): Omit<Objective, 'id' | 'milestone'> => ({ skill: 'collectBlazeRods', params: { count: LATER.blaze_rods, mode: fireResHeld(s) ? 'spawner' : 'roam' }, strategy: 'auto', budgetMs: 25 * 60_000 })
+const rodsDef = (when: (s: WorldState) => boolean): RequirementDef => ({
+  id: 'c_rods', milestone: 'C', when, requires: ['c_fortress'], ...NETHER_FLAGS, persistent: true, desc: `≥ ${LATER.blaze_rods} blaze rods`,
+  met: s => !inNether(s) || rodsDone(s), objective: rodsObjective, strategies: [{ id: 'auto' }, { id: 'roam', params: { mode: 'roam' } }, { id: 'spawner', params: { mode: 'spawner' } }],
+})
+
+/** Gold in small batches, from the bastion where there is one, nether gold ore otherwise; set aside
+ * once the sources are spent or bartering has clearly not paid (the enderman alternate takes over). */
+const goldDef = (extra: (s: WorldState) => boolean): RequirementDef => ({
+  id: 'c_gold', milestone: 'C', when: s => netherWork(s) && extra(s) && (piglinsKnown(s) || !!usableBastion(s)) && !goldExhausted(s) && !barterUnproductive(s), requires: ['c_gold_armor'], ...NETHER_FLAGS, persistent: true,
+  desc: 'gold ingots to barter (≥ 1 held)', met: s => !inNether(s) || !needBarter(s) || n(s, 'gold_ingot') >= 1,
+  objective: s => usableBastion(s)
+    ? { skill: 'bastionGold', params: { count: n(s, 'gold_ingot') + goldWant(s) }, strategy: 'bastion', budgetMs: 15 * 60_000 }
+    : { skill: 'obtain', params: { item: 'gold_ingot', count: goldWant(s) }, strategy: 'nether_gold', budgetMs: 15 * 60_000 },
+})
+/** Blaze fireballs are fire damage: a fire resistance potion makes them harmless (fixture: deaths without one, none with one). */
+const fireResDef = (extra: (s: WorldState) => boolean): RequirementDef => ({
+  id: 'c_fire_res', milestone: 'C', when: s => netherWork(s) && extra(s) && (piglinsKnown(s) || !!usableBastion(s)) && !rodsDone(s) && !goldExhausted(s), requires: ['c_gold_armor', 'c_fortress'], ...NETHER_FLAGS, bounded: true,
+  desc: 'a fire resistance potion before the blazes', met: s => !inNether(s) || rodsDone(s) || fireResHeld(s) >= 1,
+  objective: () => ({ skill: 'barterPearls', params: { count: LATER.ender_pearls, fireRes: 1, untilFireRes: true }, strategy: 'barter_fire_res', budgetMs: 10 * 60_000 }),
+  resupply: { gold_ingot: 'c_gold' },
+})
+
+/** Take the staged kit after a death (before the A basics when it is close or the bot is armed). */
+const C_UNSTASH: RequirementDef = {
+  id: 'c_unstash', milestone: 'C', bounded: true, noRelocate: true,
+  when: s => unstashWanted(s) && (armed(s) || hd(s.memory.stash!.pos, s.pos) <= 32),
+  desc: 'the staged replacement kit taken after a death',
+  met: s => !unstashWanted(s),
+  objective: () => ({ skill: 'takeStash', params: {}, strategy: 'stash', budgetMs: 5 * 60_000 }),
+}
+
+export const C_REQUIREMENTS: RequirementDef[] = [
+  C_UNSTASH,
+  ...B_REQUIREMENTS,
+  // Overworld kit for the Nether work (bounded where it is a search). After a death since B only the
+  // minimum safe kit is restored (fewer food items, one table, one pickaxe's durability).
+  { id: 'c_food', milestone: 'C', when: bDone, bounded: true, persistent: true, desc: `≥ ${C.foodItems} food items before the Nether (${C.minFoodAfterDeath} after a death since B)`, met: s => !owPrep(s) || foodItems(s.inventory) >= (rekit(s) ? C.minFoodAfterDeath : C.foodItems), objective: s => ({ skill: 'obtain', params: { item: 'raw_meat', count: countOf(s.inventory, 'raw_meat') + (rekit(s) ? C.minFoodAfterDeath : C.foodItems) - foodItems(s.inventory), searchSteps: 3 }, strategy: 'hunt_nearby', budgetMs: 4 * 60_000 }) },
+  // One table is required (there is no wood in the Nether for another); a second one is optional (c_table2).
+  { id: 'c_table', milestone: 'C', when: bDone, desc: 'a crafting table carried', met: s => !owPrep(s) || n(s, 'crafting_table') >= 1, objective: () => obtainObj('crafting_table', 1, 4) },
+  // Built up to C.pickDurability, re-opened only below C.pickReopen: the walk to an underground portal
+  // wears the pickaxes, and a 600 threshold re-opened the kit after every interrupted trip (ckit14 r02:
+  // 40 min looping between the kit and the portal). After a death since B the kit's spares (or one new
+  // stone pickaxe) are enough to go back in; when one is built it is built to pickReopen (ckit-r2b r02:
+  // one 131-use pickaxe → 4 restock trips in 1 h).
+  { id: 'c_pickaxes', milestone: 'C', when: bDone, requires: ['c_table'], desc: `pickaxe durability ≥ ${C.pickReopen} (built to ${C.pickDurability}; after a death since B ${C.minPickAfterDeath}, built to ${C.pickReopen})`, met: s => !owPrep(s) || anyPickDurability(s) >= (rekit(s) ? C.minPickAfterDeath : C.pickReopen), objective: s => obtainObj('stone_pickaxe', cPickaxes(s, rekit(s) ? C.pickReopen : C.pickDurability), 5) },
+  // After a death since B the shield is made only from iron already carried (no iron trip for it).
+  { id: 'c_shield', milestone: 'C', when: bDone, desc: 'a shield (blazes, ghasts, hoglins); after a death since B only from carried iron', met: s => !owPrep(s) || n(s, 'shield') >= 1 || (rekit(s) && ironHeld(s) === 0), objective: () => obtainObj('shield', 1, 6) },
+  // Never into the Nether without golden armor (c-dev1 r06: piglins killed the bot 7 s after a re-entry without it).
+  { id: 'c_ow_gold', milestone: 'C', when: bDone, bounded: true, persistent: true, desc: 'a golden armor piece before entering the Nether', met: s => !owPrep(s) || goldPieces(s) >= 1, objective: () => ({ skill: 'obtain', params: { item: 'golden_boots', count: 1, searchSteps: B.goldSearchSteps }, strategy: 'mine_gold', budgetMs: 10 * 60_000 }) },
+  // Optional staging (see stageOpen): each one is met as soon as it is not offered, so nothing waits on it.
+  // A second table only from carried wood (a craft preempted after placing its table leaves it behind).
+  { id: 'c_table2', milestone: 'C', when: s => bDone(s) && stageOpen(s), bounded: true, desc: `a second crafting table, only from carried wood`, met: s => !owPrep(s) || n(s, 'crafting_table') >= C.tables || !stageOpen(s) || !craftOnly(s, 'crafting_table', C.tables), objective: () => obtainObj('crafting_table', C.tables, 2) },
+  // A spare golden piece only from carried gold ingots: never a gold search (103–706 s in every ckit run;
+  // the search happens only after a death, when there is no kit to lose any more).
+  { id: 'c_stash_gold', milestone: 'C', when: s => bDone(s) && stageOpen(s), bounded: true, requires: ['c_ow_gold'], desc: 'a spare golden armor piece, only from carried gold', met: s => !owPrep(s) || !stageOpen(s) || goldPieces(s) >= 2 || !craftOnly(s, 'golden_boots', n(s, 'golden_boots') + 1), objective: s => obtainObj('golden_boots', n(s, 'golden_boots') + 1, 2) },
+  // Kit wood: only logs within C.stageWoodR (no search, no far scan, no tree spots); else no kit.
+  { id: 'c_stash_wood', milestone: 'C', when: s => bDone(s) && stashWoodOffer(s), bounded: true, requires: ['c_table'], desc: `${CHEST_PLANKS} planks for the kit chest, from trees within ${C.stageWoodR}`, met: s => !owPrep(s) || !stashWoodOffer(s), objective: s => ({ skill: 'collect', params: { block: 'log', count: inv(s, isLog) + Math.ceil((CHEST_PLANKS - planksEq(s)) / 4), maxDist: C.stageWoodR, searchSteps: 0, local: true }, strategy: 'local', budgetMs: 2 * 60_000 }) },
+  // Respawn beside the portal (1.16.1, bed-spawn fixture: using a bed by day sets the respawn point).
+  // Only a bed at hand (carried, or wool and planks carried); never a sheep hunt.
+  { id: 'c_bed', milestone: 'C', when: s => bDone(s) && bedOffer(s) && bedAtHand(s), bounded: true, noRelocate: true, desc: 'respawn point set at a bed beside the portal', met: s => !owPrep(s) || bedSet(s) || !bedOffer(s) || !bedAtHand(s), objective: s => hasBed(s) ? { skill: 'setSpawnBed', params: {}, strategy: 'portal', budgetMs: 2 * 60_000 } : obtainObj('white_bed', 1, 1) },
+  { id: 'c_stash', milestone: 'C', when: s => bDone(s) && stashOffer(s), bounded: true, noRelocate: true, desc: 'replacement kit staged beside the portal', met: s => !owPrep(s) || !stashOffer(s), objective: () => ({ skill: 'stashKit', params: {}, strategy: 'portal', budgetMs: 3 * 60_000 }) },
+  // The table and pickaxes are hard prerequisites: in the Nether there is no wood for a table (ckit6 r01:
+  // a table left behind by a preempted craft made the golden helmet plan ask for logs in the Nether).
+  { id: 'c_enter', milestone: 'C', when: bDone, requires: ['wooden_pickaxe', 'c_table', 'c_pickaxes', 'c_ow_gold'], desc: 'in the Nether for the C trip', met: s => !bDone(s) || !cNeed(s) || milestoneC(s) || inNether(s), objective: () => ({ skill: 'usePortal', params: { to: 'the_nether' }, strategy: 'built_portal', budgetMs: 8 * 60_000 }) },
+  // Nether work. Out of pickaxe (there is no wood in the Nether for another): back to the Overworld,
+  // where the kit above restocks, then in again.
+  { id: 'c_restock', milestone: 'C', when: netherWork, noRelocate: true, desc: `pickaxe durability ≥ ${C.restockDurability} in the Nether`, met: s => !inNether(s) || !cNeed(s) || anyPickDurability(s) >= C.restockDurability, objective: () => ({ skill: 'usePortal', params: { to: 'overworld' }, strategy: 'restock', budgetMs: 15 * 60_000 }) },
+  { id: 'c_gold_armor', milestone: 'C', when: netherWork, ...NETHER_FLAGS, desc: 'a golden armor piece (piglins stay neutral)', met: s => !inNether(s) || pearlsDone(s) || hasGoldArmor(s), objective: () => ({ skill: 'obtain', params: { item: 'golden_helmet', count: 1 }, strategy: 'nether_gold', budgetMs: 10 * 60_000 }) },
+  // Fortress known (seen during B or on the way): blaze rods first, after a fire resistance potion
+  // when a gold source is known (gold in small batches, bartered until the potion arrives).
+  goldDef(fireResFirst),
+  fireResDef(fireResFirst),
+  rodsDef(s => netherWork(s) && rodsFirst(s)),
+  // Neither structure known: search the 1.16.1 structure regions; the first fortress or bastion seen sets the route.
+  {
+    // Persistent like c_fortress: a search failing on hazards suspends (gold and piglins go on) instead
+    // of ending the run (ckit-r2b r03: terminated after 14 NAV_HAZARD failures with 59 min left).
+    id: 'c_structure', milestone: 'C', when: s => netherWork(s) && cRoute(s) === 'search', ...NETHER_FLAGS, persistent: true, desc: 'a fortress or a bastion located',
+    met: s => !inNether(s) || cRoute(s) !== 'search',
+    objective: () => ({ skill: 'findFortress', params: { mode: 'regions', target: 'any' }, strategy: 'regions', budgetMs: 20 * 60_000 }),
+    strategies: [{ id: 'regions', params: { mode: 'regions', target: 'any' } }, { id: 'axis', params: { mode: 'axis', target: 'any' } }],
+  },
+  // Gold in small batches, from the bastion where there is one, nether gold ore otherwise; set aside
+  // once the sources are spent or bartering has clearly not paid (the enderman alternate takes over).
+  goldDef(s => !fireResFirst(s)),
+  {
+    // Once piglins or a bastion have been seen, or once the rods are in: bartering with no piglin in
+    // memory would only wander (soul sand valley, warped forest). Gold spent → endermen.
+    id: 'c_pearls', milestone: 'C', when: s => netherWork(s) && (piglinsKnown(s) || !!usableBastion(s) || rodsDone(s) || pearlsByEndermen(s)), requires: ['c_gold_armor'], ...NETHER_FLAGS, persistent: true,
+    desc: `≥ ${LATER.ender_pearls} ender pearls`, met: s => !inNether(s) || pearlsDone(s),
+    objective: s => pearlsByEndermen(s)
+      ? { skill: 'huntEndermen', params: { count: LATER.ender_pearls }, strategy: 'endermen', budgetMs: 25 * 60_000 }
+      : { skill: 'barterPearls', params: { count: LATER.ender_pearls }, strategy: 'barter', budgetMs: 25 * 60_000 },
+    strategies: [{ id: 'barter' }, { id: 'endermen', skill: 'huntEndermen' }],
+    resupply: { gold_ingot: 'c_gold' },
+  },
+  { id: 'c_fortress', milestone: 'C', when: netherWork, ...NETHER_FLAGS, persistent: true, desc: 'a fortress located', met: s => !inNether(s) || rodsDone(s) || fortressKnown(s), objective: () => ({ skill: 'findFortress', params: { mode: 'regions' }, strategy: 'regions', budgetMs: 25 * 60_000 }), strategies: [{ id: 'regions', params: { mode: 'regions' } }, { id: 'axis', params: { mode: 'axis' } }] },
+  // Blaze fireballs are fire damage: a fire resistance potion makes them harmless (fixture: deaths
+  // without one, none with one). After the pearls (bastion route), barter for one before the rods.
+  fireResDef(s => !fireResFirst(s)),
+  rodsDef(s => netherWork(s) && !rodsFirst(s)),
+  { id: 'c_return', milestone: 'C', when: bDone, requires: ['c_pearls', 'c_rods'], noRelocate: true, desc: 'back in the Overworld through the portal', met: s => s.dim === 'overworld', objective: () => ({ skill: 'usePortal', params: { to: 'overworld' }, strategy: 'remembered_portal', budgetMs: 15 * 60_000 }) },
+]
+
+export const C_MILESTONES: Record<string, (s: WorldState) => boolean> = {
+  M0: hasTable,
+  A: netherReady,
+  B: milestoneB,
+  C: milestoneC,
 }

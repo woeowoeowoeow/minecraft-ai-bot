@@ -27,13 +27,16 @@ npm run test:scenario                      # real-server fixtures on a 1.16.1 fl
 npm run eval -- --scenario m0 --n 10       # M0 batch on 10 fresh random seeds (scripted reasoner, 10 min limit)
 npm run eval -- --scenario a --set dev --n 5          # milestone A development batch (45 min limit, reasoner none)
 caffeinate -dimsu npm run eval -- --scenario a --n 20 # milestone A gate on fresh held-out seeds (keep the host awake)
+npm run eval -- --scenario c --set dev --n 6          # milestone C development batch (120 min limit, reasoner none)
+npm run eval -- --scenario c --fixture ckit --n 2     # labeled C fixture: nether_ready kit + obsidian, Nether work on real terrain
+npx tsx src/evaluation/census.ts --n 20               # Nether structure census (evaluator-only `locate`; development measurement)
 npm run navbench -- --n 5                  # navigation benchmark (evaluation.md §6)
 npm run navbench -- --n 5 --fixture excavation   # labeled fixture: tools + peaceful, isolates excavation
 npm run inspect -- run <runId>             # one run: outcome, timeline, ground truth, bundles, last digest
 npm run inspect -- batch <batchId>         # aggregates → runs/<batchId>/report.md
 ```
 
-Options for `eval`: `--parallel N`, `--limit 10m`, `--reasoner none|scripted`, `--replay <runId,…>` (reuse private seeds for debugging, never for gates), `--keep-world`, `--label x`, `--fixture kit|kit2|excavation`.
+Options for `eval`: `--parallel N`, `--limit 10m`, `--reasoner none|scripted`, `--replay <runId,…>` (reuse private seeds for debugging, never for gates), `--keep-world`, `--label x`, `--fixture kit|kit2|excavation|bkit|ckit`.
 
 ## Layout
 

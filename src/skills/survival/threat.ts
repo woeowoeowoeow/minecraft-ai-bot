@@ -2,7 +2,7 @@
 // count, the bot's health, armor, weapon and shield, and terrain. Pure over
 // WorldState, so the controller's interrupt check and the combat skills agree.
 import type { EntityInfo, WorldState } from '../../observer/types.js'
-import { GOLDEN_ARMOR, MOB_THREATS, NIGHT, WEAPONS } from '../../version.js'
+import { GHAST, GOLDEN_ARMOR, MOB_THREATS, NIGHT, WEAPONS } from '../../version.js'
 import { isAquatic } from './aquatic.js'
 
 export type MobScore = { e: EntityInfo; t: number; ranged: boolean }
@@ -41,6 +41,9 @@ export function weakState (s: WorldState, cap = capacity(s)): boolean {
   return cap < UNARMED_CAPACITY || s.vitals.health <= RETREAT_HP
 }
 
+/** Mobs marked `avoid` (hoglins, zoglins) this close are fled from, whatever the capacity. */
+export const AVOID_DIST = 10
+
 /** Melee mobs start to count within this distance (they path to the bot from further away). */
 const MELEE_ALERT = 10
 /** The interrupt fires when the nearest scoring mob is this close (melee), or in its range (ranged). */
@@ -64,14 +67,35 @@ function dark (s: WorldState): boolean {
   return isNight(s) || s.body.covered
 }
 
+/** Piglins hit the bot recently (observer: a swing followed by damage): golden armor no longer protects. */
+export function piglinsProvoked (s: WorldState): boolean {
+  return s.memory.blacklist.some(b => b.key === 'provoked:piglin' && b.until > s.t)
+}
+
+/**
+ * A piglin that leaves a gold-wearing bot alone: 1.16.1 piglins never attack a player in golden
+ * armor until angered, however close (ckit-r2 r01: 146 flees from piglins at 1–3 blocks in a
+ * bastion, two of them into a magma cube, both fatal). Anger shows as a hit (piglinsProvoked).
+ */
+export function calmPiglin (e: EntityInfo, s: WorldState): boolean {
+  return e.name === 'piglin' && wearsGold(s) && !piglinsProvoked(s)
+}
+
+/** A hostile that may attack the bot now: not a zombified piglin, nor a calm piglin. */
+export function menacing (e: EntityInfo, s: WorldState): boolean {
+  return e.kind === 'hostile' && e.name !== 'zombified_piglin' && !calmPiglin(e, s)
+}
+
 export function mobThreat (e: EntityInfo, s: WorldState): MobScore | null {
-  if (e.kind !== 'hostile' || e.name === 'zombified_piglin') return null
+  if (!menacing(e, s)) return null
   const info = MOB_THREATS[e.name] ?? { weight: 1, range: 2 }
   const ranged = Boolean(info.ranged) || (e.name === 'drowned' && e.held === 'trident') || (e.name === 'piglin' && e.held === 'crossbow')
   const range = ranged ? Math.max(info.range, 12) : MELEE_ALERT
   if (e.dist > range) return null
-  if (e.name === 'piglin' && wearsGold(s) && e.dist > 3) return null
-  if (info.neutral) {
+  // A far ghast counts once it has charged at the bot (GHAST.aggroS); closer, as before.
+  if (e.name === 'ghast' && e.dist > GHAST.idleRange && !e.aggro && !e.charging) return null
+  // An angry (screaming) enderman is hostile at any distance (ckit-r2b r02).
+  if (info.neutral && !(e.name === 'enderman' && e.aggro)) {
     if (e.name === 'spider' ? !dark(s) && e.dist > 2.5 : e.dist > 3) return null
   }
   // Behind a wall a melee mob is no immediate danger; a ranged one cannot shoot.
@@ -111,8 +135,12 @@ export function capacity (s: WorldState): number {
   return Math.round(2.2 * hp * armor * weapon * shield * water * 100) / 100
 }
 
-export function assessThreat (s: WorldState): ThreatAssessment {
-  const mobs = s.nearby.entities.map(e => mobThreat(e, s)).filter((m): m is MobScore => m !== null).sort((a, b) => b.t - a.t || a.e.dist - b.e.dist)
+/**
+ * `ignore`: mob kinds the running skill fights or deals with itself (milestone C: blazes during
+ * collectBlazeRods, piglins while bartering, endermen while hunting them); the caller decides when.
+ */
+export function assessThreat (s: WorldState, ignore?: ReadonlySet<string>): ThreatAssessment {
+  const mobs = s.nearby.entities.filter(e => !ignore?.has(e.name)).map(e => mobThreat(e, s)).filter((m): m is MobScore => m !== null).sort((a, b) => b.t - a.t || a.e.dist - b.e.dist)
   const score = Math.round(mobs.reduce((a, m) => a + m.t, 0) * 100) / 100
   const cap = capacity(s)
   const primary = mobs[0] ?? null
@@ -128,6 +156,9 @@ export function assessThreat (s: WorldState): ThreatAssessment {
   const creeper = mobs.find(m => MOB_THREATS[m.e.name]?.explosive && (m.e.los !== false || m.e.dist <= 3) && m.e.dist <= CREEPER_SPACING)
   let action: 'defend' | 'flee' | 'cover'
   let reason: string
+  const avoided = mobs.find(m => MOB_THREATS[m.e.name]?.avoid && m.e.dist <= AVOID_DIST && (m.e.los !== false || m.e.dist <= 3))
+  // Avoided mobs: seal a pocket (cover's melee path) on land; they cannot reach into it and wander off.
+  if (avoided && !creeper) return { score, capacity: cap, mobs, primary: avoided, engage, action: s.inLiquid === 'none' ? 'cover' : 'flee', reason: `avoid ${avoided.e.name} (${avoided.e.dist})` }
   if (creeper) { action = 'flee'; reason = `creeper spacing (${creeper.e.dist}${creeper.e.swelling ? ', swelling' : ''})`; return { score, capacity: cap, mobs, primary: creeper, engage, action, reason } }
   // Hurt: any shooter in sight means cover, however close (dev batch 7 r01: fled a skeleton at 2.8 at 2.6 HP).
   const shooterInSight = mobs.some(m => m.ranged && m.e.los !== false)

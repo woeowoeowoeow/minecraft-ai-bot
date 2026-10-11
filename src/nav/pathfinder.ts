@@ -8,10 +8,12 @@ import type { EventBus } from '../observer/events.js'
 import { ownAir } from '../observer/vitals.js'
 import type { NavDiag, NavFailClass, NavGoal, NavProfile, NavResult, V3 } from '../schema/index.js'
 import { liveView, WATER_LIKE } from './blocks.js'
-import { cardinalToYaw, digReleasesLiquid, needsAir, unstickDirections } from './hazards.js'
+import { cardinalToYaw, digReleasesLiquid, isProtected, needsAir, unstickDirections } from './hazards.js'
 import { installCollisionEpsilon } from './physics-epsilon.js'
 import { excavationDistance, Excavator, type ExcavationTarget } from './excavate.js'
+import { installFallGuard } from './fall-guard.js'
 import { goalDistance } from './goal-distance.js'
+import { equipFor } from './tools.js'
 import { excavationBudgetMs, navTimeoutMs, type GotoOptions, type Navigator } from './navigator.js'
 import { DEFAULT_STUCK, planWaypoints, StuckDetector, type StuckOptions } from './stuck.js'
 import { undergroundTarget } from './underground.js'
@@ -40,6 +42,14 @@ const MAX_SUBMERGED_MS = 2500
 const SURFACE_MAX_MS = 7000
 const AIR_REFLEX = { maxSubmergedMs: MAX_SUBMERGED_MS, lowAir: LOW_AIR }
 const MAX_SURFACINGS = 4
+/** Water trap escape: exits searched this far along the surface after none within 12. */
+const ESCAPE_RADIUS = 40
+/** Ice ceilings dug through from below rather than swum under for longer than ICE_ROUTE_MAX cells. */
+const ICE_CEILING = new Set(['ice', 'packed_ice', 'frosted_ice', 'snow_block'])
+const ICE_ROUTE_MAX = 4
+/** How far above the eyes an ice ceiling is looked for, and from how far it is dug. */
+const ICE_SCAN_UP = 6
+const ICE_DIG_REACH = 3.5
 /** In water without progress this long → try a shoreline exit. */
 const WATER_STALL_MS = 8000
 const MAX_EXIT_ATTEMPTS = 3
@@ -104,7 +114,20 @@ function waterSafe (bot: Bot, m: PfMovements): void {
       // Submerged: surface first.
       return [new Move(node.x, node.y + 1, node.z, node.remainingBlocks, 1 + mm.liquidCost)]
     }
-    const out = baseNeighbors(node).filter(n => !mm.getBlock(n, 0, 1, 0).liquid)
+    let out = baseNeighbors(node).filter(n => !mm.getBlock(n, 0, 1, 0).liquid)
+    if (here.liquid) {
+      // Swimming: pathfinder digs and places only on ground, so a move that needs either never
+      // happens, and a diagonal past a solid corner pins the bot against it (ckit-r2d r01: x/z frozen
+      // 1 200 s at a packed-ice corner, every attempt "repeatedly out of air").
+      out = out.filter(n => {
+        const mv = n as unknown as { x: number; z: number; toBreak?: unknown[]; toPlace?: unknown[] }
+        if ((mv.toBreak?.length ?? 0) > 0 || (mv.toPlace?.length ?? 0) > 0) return false
+        const dx = mv.x - node.x
+        const dz = mv.z - node.z
+        if (dx === 0 || dz === 0) return true
+        return [0, 1].every(dy => !mm.getBlock(node, dx, dy, 0).physical && !mm.getBlock(node, 0, dy, dz).physical)
+      })
+    }
     if (here.liquid && !above.liquid) {
       for (const dir of dirs) {
         const c = mm.getBlock(node, dir.x, 0, dir.z)
@@ -119,13 +142,18 @@ function waterSafe (bot: Bot, m: PfMovements): void {
   }
 }
 
-function movementsFor (bot: Bot, profile: NavProfile, dry: boolean, noDig = false): PfMovements {
+function movementsFor (bot: Bot, profile: NavProfile, dry: boolean, noDig = false, portal = false): PfMovements {
   const m = new Movements(bot)
   const items = bot.registry.itemsByName
   m.scafoldingBlocks = ['dirt', 'cobblestone', 'netherrack', 'stone']
     .map(n => items[n]?.id).filter((x): x is number => x !== undefined)
   // 'walk' goals (combat chases, death recovery) never dig: digging swaps the held tool.
   m.canDig = !noDig
+  for (const b of bot.registry.blocksArray) if (isProtected(b.name)) m.blocksCantBreak.add(b.id)
+  // Never through a portal on the way somewhere else (ckit-r2d r02: a sheep chase from beside the
+  // portal walked into it and the bot hunted sheep in the Nether); only a goal in a portal cell.
+  const portalId = bot.registry.blocksByName.nether_portal?.id
+  if (!portal && portalId !== undefined) (m as unknown as { blocksToAvoid: Set<number> }).blocksToAvoid.add(portalId)
   m.allowSprinting = true
   m.maxDropDown = 4
   if (noDig) {
@@ -140,6 +168,7 @@ function movementsFor (bot: Bot, profile: NavProfile, dry: boolean, noDig = fals
   const mm = m as unknown as { liquidCost: number }
   mm.liquidCost = dry ? DRY_LIQUID_COST : LIQUID_COST
   if (profile === 'nether') netherProfile(bot, m)
+  else if (profile === 'nether_travel') netherTravelProfile(bot, m)
   else if (profile === 'overworld_cautious') {
     // Overworld work next to lava (portal sites and lava pools, milestone B): no parkour, drops of
     // at most 3, and the Nether's lava step costs. The plain overworld profile (milestone A) is unchanged.
@@ -156,6 +185,9 @@ function movementsFor (bot: Bot, profile: NavProfile, dry: boolean, noDig = fals
   waterSafe(bot, m)
   return m
 }
+
+/** An unstick move brakes after this many blocks along its direction (one cell, never past it). */
+export const UNSTICK_STEP = 0.6
 
 /** Extra cost (per step) of standing in a cell with lava this close: the path keeps its distance. */
 export const NETHER_LAVA_STEP_COST = { adjacent: 40, near2: 8 } as const
@@ -176,10 +208,57 @@ function netherProfile (bot: Bot, m: PfMovements): void {
   mm.dontCreateFlow = true
   for (const n of ['magma_block', 'soul_fire', 'fire', 'lava', 'wither_rose', 'campfire', 'soul_campfire']) { const b = reg.blocksByName[n]; if (b) mm.blocksToAvoid.add(b.id) }
   lavaCosts(bot, m)
+  // No bridge block over lava or a deep drop: when a placement fails there the bot falls (C dev
+  // batch 20261007-110334: B excursions in r01 and r02 and a mine search leg in r04 bridged over
+  // 35–50-block drops or the lava sea and fell). Towers and short gap bridges stay allowed.
+  const lavaId = reg.blocksByName.lava?.id
+  const pm = m as unknown as { exclusionAreasPlace: ((b: PBlock) => number)[] }
+  pm.exclusionAreasPlace.push(b => {
+    const cell = (dy: number): BridgeCell => {
+      const x = bot.blockAt(b.position.offset(0, -dy, 0), false)
+      return !x ? 'unknown' : x.type === lavaId ? 'lava' : x.boundingBox === 'block' ? 'solid' : 'air'
+    }
+    return unsafeBridge(cell) ? NETHER_BRIDGE.forbidden : 0
+  })
+}
+
+/** Bridge rule (pure): a block placed here needs solid ground within `depth` below it, with only air between. */
+export const NETHER_BRIDGE = { depth: 4, forbidden: 1000 } as const
+export type BridgeCell = 'solid' | 'lava' | 'air' | 'unknown'
+export function unsafeBridge (below: (dy: number) => BridgeCell): boolean {
+  for (let dy = 1; dy <= NETHER_BRIDGE.depth; dy++) {
+    const c = below(dy)
+    if (c === 'solid') return false
+    if (c !== 'air') return true // lava, or unloaded
+  }
+  return true
+}
+
+/**
+ * Long Nether travel (milestone C: fortress search, piglin search, the way back). The `nether`
+ * rules, but no scaffolding (no bridges, no towers) and lava up to 4 blocks below a step counts as
+ * near: with the `nether` costs a tower-and-bridge over a lava lake beat walking a causeway beside
+ * it and ran out of blocks mid-lake (C fixture), and a bridge over the lava-sea cavern fell 60
+ * blocks when a placement failed (ckit1 r01).
+ */
+export const NETHER_TRAVEL = { placeCost: 20, below: 4 } as const
+
+function netherTravelProfile (bot: Bot, m: PfMovements): void {
+  netherProfile(bot, m)
+  m.placeCost = NETHER_TRAVEL.placeCost
+  // No bridging or towering at all: a failed placement at the edge of the lava-sea cavern drops
+  // the bot 60 blocks into lava (ckit1 r01). Gaps are left to the tunnel fallback.
+  m.scafoldingBlocks = []
+  const mm = m as unknown as { exclusionAreasStep: ((b: PBlock) => number)[] }
+  mm.exclusionAreasStep.length = 0
+  lavaCosts(bot, m, NETHER_TRAVEL.below, false)
+  // blocksToAvoid keeps magma out of the body cells only; a magma floor burns too.
+  const magma = bot.registry.blocksByName.magma_block?.id
+  if (magma !== undefined) mm.exclusionAreasStep.push(b => bot.blockAt(b.position.offset(0, -1, 0), false)?.type === magma ? 200 : 0)
 }
 
 /** Step cost next to lava and no breaking beside it (nether and overworld_cautious profiles). */
-function lavaCosts (bot: Bot, m: PfMovements): void {
+function lavaCosts (bot: Bot, m: PfMovements, below = 2, breakRule = true): void {
   const mm = m as unknown as { exclusionAreasStep: ((b: PBlock) => number)[]; exclusionAreasBreak: ((b: PBlock) => number)[] }
   const lavaId = bot.registry.blocksByName.lava!.id
   // Lava distance per cell, cached for a few seconds (path searches visit thousands of nodes).
@@ -191,7 +270,7 @@ function lavaCosts (bot: Bot, m: PfMovements): void {
     const hit = cache.get(k)
     if (hit !== undefined) return hit
     let d = 3
-    for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) for (let dy = -2; dy <= 1; dy++) {
+    for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) for (let dy = -below; dy <= 1; dy++) {
       const r = Math.max(Math.abs(dx), Math.abs(dz))
       if (r < d && bot.blockAt(p.offset(dx, dy, dz), false)?.type === lavaId) d = r
     }
@@ -201,7 +280,7 @@ function lavaCosts (bot: Bot, m: PfMovements): void {
   const lavaWithin = (p: Vec3, r: number) => lavaDist(p) <= r
   mm.exclusionAreasStep.push(b => lavaWithin(b.position, 1) ? NETHER_LAVA_STEP_COST.adjacent : lavaWithin(b.position, 2) ? NETHER_LAVA_STEP_COST.near2 : 0)
   // Never break a block with lava anywhere around it (a flow into the tunnel is fatal here).
-  mm.exclusionAreasBreak.push(b => lavaWithin(b.position, 1) ? 1000 : 0)
+  if (breakRule) mm.exclusionAreasBreak.push(b => lavaWithin(b.position, 1) ? 1000 : 0)
 }
 
 /** A dry excavation start the bot failed to reach is skipped for this long (dev batch 6 r01: 16 tries of one cell). */
@@ -218,6 +297,7 @@ export class PathfinderNavigator implements Navigator {
 
   constructor (private readonly bot: Bot, private readonly bus: EventBus, private readonly stuckOpts: StuckOptions = DEFAULT_STUCK) {
     this.excavator = new Excavator(bot, bus)
+    installFallGuard(bot, bus)
     bot.on('forcedMove', () => {
       this.corrections.push(Date.now())
       if (this.corrections.length > 64) this.corrections.shift()
@@ -280,11 +360,13 @@ export class PathfinderNavigator implements Navigator {
   }
 
   private noDig = false
+  /** The goal is a portal cell (usePortal's step in): the only paths allowed through portal blocks. */
+  private portalGoal = false
 
   private setMovements (profile: NavProfile, dry: boolean): void {
-    const k = `${profile}:${dry ? 'dry' : 'std'}:${this.noDig ? 'nodig' : 'dig'}`
+    const k = `${profile}:${dry ? 'dry' : 'std'}:${this.noDig ? 'nodig' : 'dig'}:${this.portalGoal ? 'portal' : ''}`
     let m = this.movements.get(k)
-    if (!m) { m = movementsFor(this.bot, profile, dry, this.noDig); this.movements.set(k, m) }
+    if (!m) { m = movementsFor(this.bot, profile, dry, this.noDig, this.portalGoal); this.movements.set(k, m) }
     this.bot.pathfinder.setMovements(m)
   }
 
@@ -312,6 +394,7 @@ export class PathfinderNavigator implements Navigator {
     await new Promise(r => setImmediate(r))
     if (this.active) this.stop()
     this.noDig = goal.mode === 'walk'
+    this.portalGoal = goal.kind === 'block' && Array.isArray(goal.target) && this.bot.blockAt(new Vec3(goal.target[0]!, goal.target[1]!, goal.target[2]!), false)?.name === 'nether_portal'
     const t0 = Date.now()
     const startPos = this.pos()
     const entityPos = (): V3 | undefined => {
@@ -434,6 +517,17 @@ export class PathfinderNavigator implements Navigator {
 
   private feetInWater (): boolean {
     return Boolean((this.bot.entity as { isInWater?: boolean }).isInWater)
+  }
+
+  /**
+   * Out of the water: on the ground with no water in the feet cell. `isInWater` alone reads false
+   * while the bot bobs at the surface (prismarine-physics shrinks the hitbox by 0.4 at each end):
+   * escapeWater returned "dry" from a 1 × 1 hole it had just dug through an ice sheet.
+   */
+  private standingDry (): boolean {
+    const b = this.bot.blockAt(this.bot.entity.position.offset(0, 0.1, 0), false)
+    const wet = !!b && (WATER_LIKE.has(b.name) || (b as unknown as { getProperties (): Record<string, unknown> }).getProperties?.().waterlogged === true)
+    return this.bot.entity.onGround && !this.feetInWater() && !wet
   }
 
   private headInWater (): boolean {
@@ -632,21 +726,35 @@ export class PathfinderNavigator implements Navigator {
     const t0 = Date.now()
     let cleared = false
     const route = routeToAir(liveView(bot), [p0.x, p0.y + 1.62, p0.z])
+    // Under an ice sheet (frozen ocean or lake) with air beyond it: a long swim under the ice is the
+    // danger. The sheet is the first non-water block up the column from the head (c-staging fixture:
+    // the bot had sunk 1.4 blocks, the ice was 4.4 above the eyes and a feet-relative 2..4 window
+    // missed it). It is dug once within reach; the bot swims up to it until then.
+    let ceil: ReturnType<typeof bot.blockAt> = null
+    for (let dy = 1; dy <= ICE_SCAN_UP && !ceil; dy++) {
+      const b = bot.blockAt(p0.offset(0, 1.62 + dy, 0), false)
+      if (!b) break
+      if (b.name !== 'water') ceil = b
+    }
+    const ceilInReach = () => !!ceil && ceil.position.y + 0.5 - (bot.entity.position.y + 1.62) <= ICE_DIG_REACH
+    const overCeil = ceil ? bot.blockAt(ceil.position.offset(0, 1, 0), false) : null
+    const iceCeiling = !!ceil && ICE_CEILING.has(ceil.name) && !!overCeil && (overCeil.boundingBox === 'empty' || overCeil.name === 'water')
+    const digFirst = iceCeiling && (!route || route.length > ICE_ROUTE_MAX)
     let wp = 0
     let dug = false
     const start = bot.entity.position.clone()
-    while (Date.now() - t0 < SURFACE_MAX_MS) {
+    while (Date.now() - t0 < SURFACE_MAX_MS + (dug && iceCeiling ? 6000 : 0)) {
       // A route that is not being followed (wedged under a block, dev batch 12 r03): dig the ceiling.
       if (!cleared && route && !dug && Date.now() - t0 > 2500 && bot.entity.position.distanceTo(start) < 0.5) {
         dug = true
         const above = bot.blockAt(bot.entity.position.offset(0, 2.2, 0), false)
-        if (above && above.boundingBox === 'block' && above.diggable && bot.digTime(above) < 2500 && !/sand|gravel/.test(above.name)) {
+        if (above && above.boundingBox === 'block' && above.diggable && !isProtected(above.name) && bot.digTime(above) < 2500 && !/sand|gravel/.test(above.name)) {
           await withTimeout(bot.dig(above, true), bot.digTime(above) + 3000).catch(() => {})
         }
       }
       // Re-assert every tick: a pathfinder dig aborted by halt() clears control states asynchronously.
       bot.setControlState('jump', true)
-      if (!cleared && route && route.length > 1 && wp < route.length) {
+      if (!cleared && route && !digFirst && route.length > 1 && wp < route.length) {
         // Steer the head toward the next water cell on the route to open air.
         const c = route[wp]!
         const p = bot.entity.position
@@ -657,11 +765,18 @@ export class PathfinderNavigator implements Navigator {
           await bot.look(Math.atan2(-dx, -dz), 0, true)
           bot.setControlState('forward', Math.hypot(dx, dz) >= 0.35)
         }
-      } else if (!cleared && !route && !dug && Date.now() - t0 > 1500) {
-        // No water route to air: dig the ceiling if it is quick to break.
+      } else if (!cleared && !dug && (digFirst || (!route && Date.now() - t0 > 1500)) && (!iceCeiling || ceilInReach()) &&
+        (iceCeiling || bot.blockAt(bot.entity.position.offset(0, 2.2, 0), false)?.name !== 'water')) {
+        // No water route to air (or, under an ice sheet, only a long one): dig the ceiling if it is
+        // quick to break. Ice over water turns into water and opens the column to the air above.
+        // Still rising through open water: the one dig waits for a block.
         dug = true
-        const above = bot.blockAt(bot.entity.position.offset(0, 2.2, 0), false)
-        if (above && above.boundingBox === 'block' && above.diggable && bot.digTime(above) < 2500 && !/sand|gravel/.test(above.name)) {
+        const above = iceCeiling ? bot.blockAt(ceil!.position, false) : bot.blockAt(bot.entity.position.offset(0, 2.2, 0), false)
+        const limit = iceCeiling ? 6000 : 2500
+        // Under water and afloat a dig is 25× slower: the right tool matters (a pickaxe for ice).
+        if (above && iceCeiling) await equipFor(bot, above).catch(() => null)
+        if (above && above.boundingBox === 'block' && above.diggable && !isProtected(above.name) && bot.digTime(above) < limit && !/sand|gravel/.test(above.name)) {
+          this.bus.emit('water_event', { kind: 'ceiling_dig', block: above.name, route: route ? route.length : null, air: ownAir(bot) }, 'info')
           await withTimeout(bot.dig(above, true), bot.digTime(above) + 3000).catch(() => {})
         }
       }
@@ -675,16 +790,36 @@ export class PathfinderNavigator implements Navigator {
   }
 
   /**
+   * Water trap escape (after ckit-r2d r01, where every route to the portal ended "repeatedly out of
+   * air" for 1 200 s): surface first (an ice ceiling is dug), then the shoreline exits within 12,
+   * then within ESCAPE_RADIUS along the surface (notches cut into packed ice or snow included).
+   * True once the bot stands out of the water.
+   */
+  async escapeWater (signal: AbortSignal): Promise<boolean> {
+    if (this.standingDry()) return true
+    if (this.headInWater() && !(await this.surface())) return false
+    const diag = { surfacings: 0 } as unknown as NavDiag
+    for (const radius of [12, ESCAPE_RADIUS]) {
+      if (signal.aborted) return false
+      const r = await this.exitWater({ signal }, () => signal.aborted, diag, radius)
+      if (r === 'ok') return true
+      if (r === 'no_air') return false
+      diag.surfacings = 0
+    }
+    return this.standingDry()
+  }
+
+  /**
    * Climb out at the nearest real shoreline exit: flush exits first, then ledges.
    * Swims to the surface cell beside the exit (pathfinder, surface-only water model),
    * digs a ledge's lip while holding the surface, then jumps out with plain controls.
    * Air reflex: every wait in here checks the head and air supply and surfaces
    * before continuing; if the bot cannot surface the exit is abandoned ('no_air').
    */
-  private async exitWater (o: GotoOptions, isAborted: () => boolean, diag: NavDiag): Promise<'ok' | 'failed' | 'no_air'> {
+  private async exitWater (o: Pick<GotoOptions, 'signal'>, isAborted: () => boolean, diag: NavDiag, radius = 12): Promise<'ok' | 'failed' | 'no_air'> {
     const bot = this.bot
     const p = bot.entity.position
-    const exits = findWaterExits(liveView(bot), [p.x, p.y, p.z], 12)
+    const exits = findWaterExits(liveView(bot), [p.x, p.y, p.z], radius)
     this.bus.emit('water_event', { kind: 'exit_attempt', pos: [p.x, p.y, p.z].map(Math.round), candidates: exits.length, best: exits[0] ?? null }, 'info')
     const stop = () => isAborted() || o.signal.aborted
     let submergedSince: number | null = null
@@ -707,7 +842,7 @@ export class PathfinderNavigator implements Navigator {
       if (stop() || noAir) break
       const approach = new goals.GoalXZ(ex.from[0], ex.from[2])
       bot.pathfinder.setGoal(approach)
-      const end = Date.now() + 12_000
+      const end = Date.now() + 12_000 + 600 * ex.dist
       while (Date.now() < end && !stop() && !approach.isEnd(bot.entity.position.floored() as never)) {
         await sleep(SAMPLE_MS)
         if (!(await breathe())) break
@@ -720,17 +855,23 @@ export class PathfinderNavigator implements Navigator {
       const tx = sx + 0.5
       const tz = sz + 0.5
       const face = () => bot.look(Math.atan2(-(tx - bot.entity.position.x), -(tz - bot.entity.position.z)), 0, true)
-      if (ex.kind === 'ledge') {
-        for (let tries = 0; tries < 3; tries++) {
-          if (!(await breathe())) break
-          const lip = bot.blockAt(new Vec3(sx, sy, sz), false)
-          if (!lip || lip.boundingBox === 'empty') break
-          bot.setControlState('jump', true)
-          await withTimeout(bot.dig(lip, true), bot.digTime(lip) * 2 + 3000).catch(() => { try { bot.stopDigging() } catch { /* ignore */ } })
+      if (ex.kind === 'ledge' || ex.kind === 'notch') {
+        // The lip, and for a notch the block above it too (the bot then stands in the notch).
+        for (const dy of ex.kind === 'notch' ? [0, 1] : [0]) {
+          for (let tries = 0; tries < 3; tries++) {
+            if (!(await breathe())) break
+            const b = bot.blockAt(new Vec3(sx, sy + dy, sz), false)
+            if (!b || b.boundingBox === 'empty') break
+            bot.setControlState('jump', true)
+            await face()
+            await equipFor(bot, b).catch(() => null)
+            await withTimeout(bot.dig(b, true), bot.digTime(b) * 2 + 3000).catch(() => { try { bot.stopDigging() } catch { /* ignore */ } })
+          }
+          if (noAir) break
         }
         if (noAir) break
-        const lip = bot.blockAt(new Vec3(sx, sy, sz), false)
-        if (lip && lip.boundingBox !== 'empty') { bot.clearControlStates(); continue }
+        const blocked = [0, ...(ex.kind === 'notch' ? [1] : [])].some(dy => (bot.blockAt(new Vec3(sx, sy + dy, sz), false)?.boundingBox ?? 'block') !== 'empty')
+        if (blocked) { bot.clearControlStates(); continue }
       }
       const until = Date.now() + 3000
       while (Date.now() < until && !stop()) {
@@ -773,14 +914,33 @@ export class PathfinderNavigator implements Navigator {
       bot.setControlState('forward', true)
     }
     bot.setControlState('jump', true)
-    await sleep(attempt <= 1 ? 700 : 900)
+    // One cell at most: `stepHazard` vouches for the next cell only, and 700 ms of forward + jump
+    // carried the bot 3.5 blocks, off a ledge into lava 6.7 below (ckit-r2c r01, bastion approach).
+    // Releasing forward is not enough (airborne momentum carries ~1 block): brake with a short back.
+    const start = p.clone()
+    const until = Date.now() + (attempt <= 1 ? 700 : 900)
+    let braked = false
+    while (Date.now() < until) {
+      await sleep(50)
+      const d = dirs[0]
+      const q = bot.entity.position
+      if (!braked && d && (q.x - start.x) * d[0] + (q.z - start.z) * d[1] >= UNSTICK_STEP) {
+        braked = true
+        bot.setControlState('forward', false)
+        bot.setControlState('sprint', false)
+        bot.setControlState('jump', false)
+        bot.setControlState('back', true)
+        await sleep(150)
+        bot.setControlState('back', false)
+      }
+    }
     bot.clearControlStates()
     if (attempt > 1 && dirs.length) {
       const d = dirs[0]!
       const q = bot.entity.position
       const head: V3 = [Math.floor(q.x) + d[0], Math.floor(q.y + 1e-3) + 1, Math.floor(q.z) + d[1]]
       const b = bot.blockAt(new Vec3(...head), false)
-      if (b && b.boundingBox === 'block' && b.diggable && !/bedrock/.test(b.name) && bot.canDigBlock(b) && !digReleasesLiquid(liveView(bot), head)) {
+      if (b && b.boundingBox === 'block' && b.diggable && !/bedrock/.test(b.name) && !isProtected(b.name) && bot.canDigBlock(b) && !digReleasesLiquid(liveView(bot), head)) {
         await withTimeout(bot.dig(b, true), 6000).catch(() => {})
       }
     }

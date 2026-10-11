@@ -101,14 +101,31 @@ export const SOURCES: Record<string, Source> = {
   sand: { kind: 'gather', blocks: ['sand'], skill: 'collect' },
   dirt: { kind: 'gather', blocks: ['dirt', 'grass_block'], skill: 'collect' },
   raw_meat: { kind: 'hunt', mobs: Object.keys(FOOD_ANIMALS) },
+  // A bed for the C respawn point: white wool from white, unsheared sheep (hunt filters by colour).
+  white_wool: { kind: 'hunt', mobs: ['sheep'] },
   water_bucket: { kind: 'fill', fluid: 'water' },
   cooked_food: { kind: 'smelt', input: 'raw_meat' },
   coal_any: { kind: 'gather', blocks: ['coal_ore'], skill: 'mine', tool: { tool: 'pickaxe', minTier: 0 } },
 }
 
+/**
+ * Nether sources (milestone C): gold comes as nuggets from nether gold ore (any pickaxe,
+ * 2–6 per block, 1.16.1 loot table), and ingots are crafted from 9 nuggets. In the Overworld
+ * gold ingots stay smelted from gold ore (the B golden helmet).
+ */
+export const NETHER_SOURCES: Record<string, Source> = {
+  gold_nugget: { kind: 'gather', blocks: ['nether_gold_ore'], skill: 'mine', tool: { tool: 'pickaxe', minTier: 0 } },
+  gold_ingot: { kind: 'craft' },
+}
+
 const SMELT_INPUT: Record<string, string> = Object.fromEntries(Object.entries(SMELTING).map(([i, o]) => [o, i]))
 
-export function sourceFor (item: string): Source | null {
+/** No source in the Nether: Overworld wood (the bot would only wander; ckit9/10: falls and lava). */
+const NETHER_NONE = new Set(['log'])
+
+export function sourceFor (item: string, nether = false): Source | null {
+  if (nether && NETHER_NONE.has(item)) return null
+  if (nether && NETHER_SOURCES[item]) return NETHER_SOURCES[item]!
   if (SOURCES[item]) return SOURCES[item]!
   if (item === 'planks' || GROUPS.planks!(item)) return { kind: 'craft' }
   if (SMELT_INPUT[item]) return { kind: 'smelt', input: SMELT_INPUT[item]! }
@@ -129,8 +146,17 @@ function normalise (name: string): string {
   return name
 }
 
+/**
+ * Recipes chosen explicitly where minecraft-data lists several: a gold ingot from nine nuggets
+ * (its first recipe is the gold block's, which the bot never has).
+ */
+const RECIPE_OVERRIDES: Record<string, Recipe> = {
+  gold_ingot: { result: 1, ingredients: { gold_nugget: 9 }, table: true },
+}
+
 export function recipeFor (item: string): Recipe | null {
   if (item === 'planks' || GROUPS.planks!(item)) return { result: 4, ingredients: { log: 1 }, table: false }
+  if (RECIPE_OVERRIDES[item]) return RECIPE_OVERRIDES[item]!
   const it = data.itemsByName[item]
   if (!it) return null
   const rs = data.recipes[it.id] ?? []
@@ -162,6 +188,8 @@ export type Hints = {
   furnaceNear?: boolean
   /** Coal ore is in the interest index (so coal is the cheap fuel). */
   coalOreKnown?: boolean
+  /** In the Nether: Nether sources first (gold from nether gold ore). */
+  nether?: boolean
 }
 
 export class ResolveError extends Error {
@@ -227,7 +255,7 @@ export function planObtain (item: string, count: number, inv0: Inv, hints: Hints
     if (depth > MAX_DEPTH) throw new ResolveError(it, `depth > ${MAX_DEPTH}`)
     if (stack.includes(it)) throw new ResolveError(it, `cycle ${[...stack, it].join('>')}`)
     const need = n - avail(it)
-    const src = sourceFor(it)
+    const src = sourceFor(it, hints.nether === true)
     if (!src) throw new ResolveError(it, 'no known source')
     const st = [...stack, it]
     switch (src.kind) {

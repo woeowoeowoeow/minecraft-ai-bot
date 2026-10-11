@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { BotResultS, type BotConfig, type BotResult, type GroundTruth, type Outcome, type RunSummary, type Scenario } from '../schema/index.js'
-import { milestoneBVerified, netherReadyInventory, parseDimension, parseInventoryData, parseServerLine } from './groundtruth.js'
+import { milestoneBVerified, milestoneCVerified, netherReadyInventory, parseDimension, parseInventoryData, parseServerLine } from './groundtruth.js'
 import { resolveJava, type JavaRuntime } from './java.js'
 import { terminate, waitExit, type ProcessRegistry } from './procs.js'
 import { MC_VERSION } from '../version.js'
@@ -46,7 +46,7 @@ export type RunOptions = {
  * bot joins, plus optional server-property overrides. Fixture batches are labeled
  * and never scored.
  */
-export type FixtureName = 'kit' | 'kit2' | 'excavation' | 'bkit'
+export type FixtureName = 'kit' | 'kit2' | 'excavation' | 'bkit' | 'ckit'
 export type Fixture = { commands: (user: string) => string[]; properties?: Record<string, string> }
 export const FIXTURES: Record<FixtureName, Fixture> = {
   // Milestone-A-like navigation kit: a pickaxe for digging, blocks for scaffolding.
@@ -64,6 +64,13 @@ export const FIXTURES: Record<FixtureName, Fixture> = {
   // must still find), so the portal and Nether work can be exercised without the A phase.
   bkit: {
     commands: user => ['iron_pickaxe 1', 'iron_sword 1', 'shield 1', 'bucket 1', 'water_bucket 1', 'iron_helmet 1', 'iron_boots 1', 'flint_and_steel 1', 'cooked_beef 16', 'cobblestone 64', 'crafting_table 1', 'stick 4']
+      .map(i => `give ${user} minecraft:${i}`),
+  },
+  // Milestone C development: the nether_ready inventory plus 10 obsidian (an obsidian portal, so B is
+  // short), a golden helmet and the C Overworld kit, so the Nether work runs on real terrain.
+  // Development only: never a gate (the gate starts from a fresh spawn).
+  ckit: {
+    commands: user => ['iron_pickaxe 1', 'iron_sword 1', 'shield 1', 'bucket 1', 'water_bucket 1', 'iron_helmet 1', 'iron_boots 1', 'golden_helmet 1', 'flint_and_steel 1', 'obsidian 10', 'cooked_beef 20', 'cobblestone 64', 'crafting_table 1', 'stick 8', 'stone_pickaxe 2']
       .map(i => `give ${user} minecraft:${i}`),
   },
 }
@@ -212,7 +219,7 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
       }
       const pos = await server.query(`data get entity ${username} Pos`, new RegExp(`${username} has the following entity data: \\[(-?[\\d.]+)d, (-?[\\d.]+)d, (-?[\\d.]+)d\\]`), 3000)
       if (pos) recordGt({ t: since(), kind: 'position', data: { pos: [Number(pos[1]), Number(pos[2]), Number(pos[3])].map(Math.round) } })
-      if (o.target === 'B') {
+      if (o.target === 'B' || o.target === 'C') {
         const dim = await server.query(`data get entity ${username} Dimension`, new RegExp(`${username} has the following entity data: "minecraft:[a-z_]+"`), 3000)
         gtDimension = dim ? parseDimension(dim[0], username) : null
         recordGt({ t: since(), kind: 'dimension', data: { dimension: gtDimension } })
@@ -285,6 +292,7 @@ export async function runOne (o: RunOptions): Promise<RunSummary> {
   if (o.target === 'A' && gtInventory) verified = outcome === 'goal_reached' ? netherReadyInventory(gtInventory) : true
   if (o.scenario === 'navbench') verified = gtInventory ? true : null
   if (o.target === 'B') verified = outcome === 'goal_reached' ? milestoneBVerified({ advancements, dimension: gtDimension, portalCheck: gtPortalCheck }) : true
+  if (o.target === 'C') verified = outcome === 'goal_reached' ? milestoneCVerified({ advancements, dimension: gtDimension, portalCheck: gtPortalCheck, inventory: gtInventory }) : true
 
   const failures = br?.failures ?? []
   const byClass: Record<string, number> = {}

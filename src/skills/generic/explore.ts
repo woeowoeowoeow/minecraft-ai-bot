@@ -27,6 +27,9 @@ export function nextSearchHeading (me: V3, origin: V3 | null, prev: number | nul
   return Math.atan2(dx, -dz) + (random() - 0.5) * (Math.PI / 2)
 }
 
+/** Nether search legs stay in this height band (the lava sea is at y 31; same band as Nether mining). */
+export const NETHER_SEARCH_Y = [40, 100] as const
+
 /** Per-skill-run search state: heading memory and step count. */
 export class Searcher {
   steps = 0
@@ -53,9 +56,14 @@ export class Searcher {
     const tx = Math.round(me[0] + Math.sin(this.heading) * d)
     const tz = Math.round(me[2] - Math.cos(this.heading) * d)
     ctx.log('search_step', { n: this.steps, for: this.label, heading: Math.round((this.heading * 180) / Math.PI) % 360, from: me.map(Math.round), target: [tx, under ? Math.floor(me[1]) : 0, tz], mode: under ? 'tunnel' : 'surface' })
-    const r = under
-      ? await ctx.nav.goto({ kind: 'near', target: [tx, Math.floor(me[1]), tz], range: 2 })
-      : await ctx.nav.goto({ kind: 'xz', target: [tx, 0, tz], range: 4, ...(this.opts.dry ? { dry: true } : {}) })
+    // The Nether (milestone C): a level leg in the safe band, never a bridge (C dev batch
+    // 20261007-110334 r04: an `xz` leg at y 34 bridged over the lava sea and fell in).
+    const nether = s.dim === 'the_nether'
+    const r = nether
+      ? await ctx.nav.goto({ kind: 'near', target: [tx, Math.min(NETHER_SEARCH_Y[1], Math.max(NETHER_SEARCH_Y[0], Math.floor(me[1]))), tz], range: 4, mode: 'path' }, { profile: 'nether_travel', timeoutMs: 45_000 })
+      : under
+        ? await ctx.nav.goto({ kind: 'near', target: [tx, Math.floor(me[1]), tz], range: 2 })
+        : await ctx.nav.goto({ kind: 'xz', target: [tx, 0, tz], range: 4, ...(this.opts.dry ? { dry: true } : {}) })
     if (!r.ok && r.class === 'CANCELLED') ctx.checkAbort()
     this.lastFailed = !r.ok
     if (r.ok) ctx.progress(`search:${this.label}`, this.steps)

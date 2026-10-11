@@ -37,6 +37,7 @@ export function fakeEnv (state = fakeState()): SkillEnv & { halted: number; bus:
       budgetMs: () => 60_000,
       recent: () => [],
       surface: async () => true,
+      escapeWater: async () => true,
     },
     state: () => state,
     memory: state.memory,

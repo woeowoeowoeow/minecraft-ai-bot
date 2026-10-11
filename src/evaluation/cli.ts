@@ -2,6 +2,7 @@
 // npm run navbench -- --n 5 [--fixture kit]
 // npm run eval -- --scenario a --n 20 (milestone A: 45 min limit, reasoner none)
 // npm run eval -- --scenario b --n 20 (milestone B: 70 min limit, reasoner none) [--fixture bkit for development]
+// npm run eval -- --scenario c --n 20 (milestone C: 120 min limit, reasoner none) [--fixture ckit for development]
 // npm run eval -- --resume <batchId> (continue an interrupted batch from its private seed manifest)
 //   B batches apply the predeclared early-fail rules (evaluation.md §1, early-fail rules); --no-early-stop disables them
 // npm run inspect -- early-stop <batchId|runId> (replay the early-fail rules over finished runs)
@@ -53,7 +54,7 @@ async function main (): Promise<void> {
     scenario,
     n: Number(values.n),
     parallel: Number(values.parallel),
-    limitMs: parseDuration(values.limit ?? (scenario === 'navbench' ? '25m' : scenario === 'a' ? '45m' : scenario === 'b' ? '70m' : '10m')),
+    limitMs: parseDuration(values.limit ?? (scenario === 'navbench' ? '25m' : scenario === 'a' ? '45m' : scenario === 'b' ? '70m' : scenario === 'c' ? '120m' : '10m')),
     reasoner: (values.reasoner ?? (scenario === 'm0' ? 'scripted' : 'none')) as 'none' | 'scripted',
     set: values.replay ? 'replay' : values.set === 'dev' ? 'dev' : 'heldout',
     replay: values.replay?.split(','),

@@ -40,6 +40,24 @@ export function safeStand (view: BlockView, p: V3, r = 2): boolean {
 }
 
 /**
+ * A safe barter position (milestone C): the nearest safe standable cell within `r` (no lava
+ * within 3, no cliff edge), `here` itself when it already is one, null when none is near.
+ * Piglins walk to a player holding gold, so the bot waits where a misstep costs nothing.
+ */
+export function barterSpot (view: BlockView, here: V3, r = 6): V3 | null {
+  const p = here.map(Math.floor) as V3
+  if (safeStand(view, p, 3)) return p
+  let best: V3 | null = null
+  let bestD = Infinity
+  for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) for (let dy = -2; dy <= 2; dy++) {
+    const c: V3 = [p[0] + dx, p[1] + dy, p[2] + dz]
+    const d = Math.hypot(dx, dz) + 2 * Math.abs(dy)
+    if (d < bestD && d <= r && safeStand(view, c, 3)) { best = c; bestD = d }
+  }
+  return best
+}
+
+/**
  * Excursion targets at `minDist`..`minDist + 8` blocks (horizontal) from the portal,
  * within 4 blocks of its height: safe standable cells, one per 45° sector, best first
  * (fewest lava cells within 4, smallest height change). Deterministic.

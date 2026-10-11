@@ -11,11 +11,17 @@ import { smelt } from './generic/smelt.js'
 import { findLavaPool } from './progression/lava.js'
 import { netherExcursion, usePortal } from './progression/nether.js'
 import { buildNetherPortal } from './progression/portal.js'
+import { barterPearls, huntEndermen } from './progression/barter.js'
+import { collectBlazeRods } from './progression/blaze.js'
+import { findFortress } from './progression/fortress.js'
+import { bastionGold } from './progression/bastion.js'
+import { setSpawnBed, stashKit, takeStash } from './progression/stash.js'
 import type { SkillRunner } from './runner.js'
 import { defend, flee } from './survival/combat.js'
 import { cover } from './survival/cover.js'
+import { deflect } from './survival/ghast.js'
 import { eat, equipGear, holdSafe, manageInventory, pickupDrops, rest, shelter } from './survival/maintenance.js'
-import { escapeLava, escapeSuffocation, extinguish, surfaceForAir } from './survival/reflexes.js'
+import { escapeLava, escapeSuffocation, escapeWater, extinguish, leavePortal, stepOffMagma, surfaceForAir } from './survival/reflexes.js'
 
 /** M0 skill set. */
 export function registerM0Skills (runner: SkillRunner): SkillRunner {
@@ -25,13 +31,21 @@ export function registerM0Skills (runner: SkillRunner): SkillRunner {
 /** Milestone A: generic acquisition (architecture §6.1) plus the survival skills behind P0–P2. */
 export function registerASkills (runner: SkillRunner): SkillRunner {
   registerM0Skills(runner)
-  for (const s of [explore, relocate, mine, smelt, hunt, fillBucket, obtain, recoverItems, findLavaPool, escapeLava, extinguish, surfaceForAir, escapeSuffocation, defend, flee, cover, eat, equipGear, manageInventory, pickupDrops, holdSafe, shelter, rest]) runner.register(s)
+  for (const s of [explore, relocate, mine, smelt, hunt, fillBucket, obtain, recoverItems, findLavaPool, escapeLava, extinguish, stepOffMagma, leavePortal, escapeWater, surfaceForAir, escapeSuffocation, defend, flee, cover, eat, equipGear, manageInventory, pickupDrops, holdSafe, shelter, rest]) runner.register(s)
   return runner
 }
 
 /** Milestone B: everything in A plus the portal builder and the Nether trip (architecture §6.1 progression skills). */
 export function registerBSkills (runner: SkillRunner): SkillRunner {
   registerASkills(runner)
-  for (const s of [buildNetherPortal, usePortal, netherExcursion]) runner.register(s)
+  // `deflect` (P0, ghast fire) only fires in the Nether.
+  for (const s of [buildNetherPortal, usePortal, netherExcursion, deflect]) runner.register(s)
+  return runner
+}
+
+/** Milestone C: everything in B plus the fortress search, blaze rods and pearls (architecture §6.1 progression skills). */
+export function registerCSkills (runner: SkillRunner): SkillRunner {
+  registerBSkills(runner)
+  for (const s of [findFortress, collectBlazeRods, barterPearls, huntEndermen, bastionGold, stashKit, takeStash, setSpawnBed]) runner.register(s)
   return runner
 }

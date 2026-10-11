@@ -5,10 +5,11 @@ import { z } from 'zod'
 import { liveView } from '../../nav/blocks.js'
 import { safeCells } from '../../nav/hazards.js'
 import type { V3 } from '../../schema/index.js'
-import { dig } from '../acts.js'
+import { dig, waitFor } from '../acts.js'
 import { useBucket } from '../progression/buckets.js'
 import { sleep } from '../runner.js'
 import { SkillFailure, type SkillDef } from '../types.js'
+import { useFireRes } from './potion.js'
 
 const None = z.object({}).passthrough()
 
@@ -43,11 +44,21 @@ export const extinguish: SkillDef<z.infer<typeof None>, { out: boolean }> = {
 }
 type P = z.infer<typeof None>
 
-const inDanger = (b: { feet: string; head: string }, inLiquid: string) => b.feet === 'lava' || b.head === 'lava' || b.feet === 'fire' || b.head === 'fire' || inLiquid === 'lava'
+const inDanger = (b: { feet: string; head: string; inFire?: boolean }, inLiquid: string) => b.feet === 'lava' || b.head === 'lava' || b.feet === 'fire' || b.head === 'fire' || b.inFire === true || inLiquid === 'lava'
+
+/**
+ * Drink a fire resistance potion in lava only above this health, and only with no safe cell within
+ * LAVA_EDGE: drinking takes 1.6 s and lava burns 4 per 0.5 s (fixture: drunk at 18 HP in a pool's
+ * centre, took effect at 2 HP; not drunk, died escaping). Next to an edge the bot just steps out.
+ */
+export const LAVA_DRINK_HP = 10
+export const LAVA_EDGE = 1.5
 
 /**
  * Get out of lava or fire: head for the nearest safe standable cell (safeCells)
- * with sprint and jump (jumping swims up in lava), re-targeting every 100 ms.
+ * with sprint and jump (jumping swims up in lava), re-targeting every 100 ms. In lava with a
+ * fire resistance potion carried, use it first: a splash potion at once, a drinkable one above
+ * LAVA_DRINK_HP (ckit-r2b r02: fell into lava holding a splash potion, 13 → 0 HP in 1.8 s).
  */
 export const escapeLava: SkillDef<P, { ms: number; target: V3 | null }> = {
   id: 'escapeLava',
@@ -60,11 +71,24 @@ export const escapeLava: SkillDef<P, { ms: number; target: V3 | null }> = {
     const bot = ctx.bot
     const t0 = Date.now()
     let target: V3 | null = null
+    let potionTried = false
     try {
       while (Date.now() - t0 < 9000) {
         ctx.checkAbort()
         const s = ctx.state()
         if (!inDanger(s.body, s.inLiquid)) return { ms: Date.now() - t0, target }
+        if (!potionTried && (s.inLiquid === 'lava' || s.body.feet === 'lava' || s.body.head === 'lava') && !s.vitals.effects.includes('FireResistance')) {
+          potionTried = true
+          bot.setControlState('jump', true)
+          const q = bot.entity.position
+          const edge = safeCells(liveView(bot), [Math.floor(q.x), Math.floor(q.y + 0.05), Math.floor(q.z)])[0]
+          const nearEdge = !!edge && Math.hypot(edge[0] + 0.5 - q.x, edge[2] + 0.5 - q.z) <= LAVA_EDGE
+          const used = await useFireRes(bot, ctx.signal, { splashOnly: nearEdge || s.vitals.health <= LAVA_DRINK_HP })
+          if (used) {
+            const ok = await waitFor(() => ctx.state().vitals.effects.includes('FireResistance'), 1000, ctx.signal)
+            ctx.log('lava_potion', { kind: used, ok, hp: Math.round(ctx.state().vitals.health * 10) / 10 })
+          }
+        }
         const p = bot.entity.position
         const feet: V3 = [Math.floor(p.x), Math.floor(p.y + 0.05), Math.floor(p.z)]
         target = safeCells(liveView(bot), feet)[0] ?? null
@@ -134,4 +158,82 @@ export const escapeSuffocation: SkillDef<P, { dug: number }> = {
     throw new SkillFailure('NAV_HAZARD', 'still inside blocks', { key: 'hazard=suffocation' })
   },
   async onCancel (ctx) { try { ctx.bot.stopDigging() } catch { /* ignore */ } },
+}
+
+/**
+ * Step off a magma floor (milestone C, Nether): to the nearest safe standable cell (safeCells
+ * rejects harmful floors and lava beside the body), walking only.
+ */
+export const stepOffMagma: SkillDef<z.infer<typeof None>, { to: V3 | null }> = {
+  id: 'stepOffMagma',
+  level: 'survival',
+  params: None,
+  preconditions: () => ({ ok: true }),
+  timeoutMs: () => 8000,
+  stallMs: 8000,
+  async run (ctx) {
+    const p = ctx.bot.entity.position
+    const feet: V3 = [Math.floor(p.x), Math.floor(p.y + 0.05), Math.floor(p.z)]
+    for (const c of safeCells(liveView(ctx.bot), feet, 4).slice(0, 3)) {
+      const r = await ctx.nav.goto({ kind: 'block', target: c, mode: 'walk' }, { timeoutMs: 3000 })
+      if (r.ok || ctx.state().body.floor !== 'magma_block') return { to: c }
+      if (r.class === 'CANCELLED') ctx.checkAbort()
+    }
+    throw new SkillFailure('NAV_HAZARD', 'no safe cell off the magma', { key: 'hazard=magma' })
+  },
+  async onCancel (ctx) { ctx.env.nav.stop() },
+}
+
+/**
+ * Step out of a portal (any skill but the portal skills): 4 s standing in one teleports. ckit-r2d
+ * r02: the bed staging stood in the portal and was sent to the Nether, where it then hunted sheep.
+ * To the nearest safe standable cell whose feet and head are not portal cells, walking only.
+ */
+export const leavePortal: SkillDef<z.infer<typeof None>, { to: V3 | null }> = {
+  id: 'leavePortal',
+  level: 'survival',
+  params: None,
+  preconditions: () => ({ ok: true }),
+  timeoutMs: () => 8000,
+  stallMs: 8000,
+  async run (ctx) {
+    const bot = ctx.bot
+    const p = bot.entity.position
+    const feet: V3 = [Math.floor(p.x), Math.floor(p.y + 0.05), Math.floor(p.z)]
+    const portal = (c: V3) => [0, 1].some(dy => bot.blockAt(new Vec3(c[0], c[1] + dy, c[2]), false)?.name === 'nether_portal')
+    const cells = safeCells(liveView(bot), feet, 3).filter(c => !portal(c))
+    for (const c of cells.slice(0, 3)) {
+      const r = await ctx.nav.goto({ kind: 'block', target: c, mode: 'walk' }, { timeoutMs: 3000 })
+      if (r.ok || !ctx.state().body.inPortal) return { to: c }
+      if (r.class === 'CANCELLED') ctx.checkAbort()
+    }
+    throw new SkillFailure('NAV_STUCK', 'cannot step out of the portal', { key: 'hazard=portal' })
+  },
+  async onCancel (ctx) { ctx.env.nav.stop() },
+}
+
+/**
+ * Water trap escape (P0, after a route failed on the water itself and the bot is still in it):
+ * surface, dig an ice ceiling if needed, then climb out at an exit within 12, else within 40 along
+ * the surface (notches cut into packed ice or snow). ckit-r2d r01: pinned at a packed-ice corner,
+ * every route "repeatedly out of air", the objectives retried from the water for 1 200 s.
+ */
+export const escapeWater: SkillDef<z.infer<typeof None>, { dry: boolean }> = {
+  id: 'escapeWater',
+  level: 'survival',
+  params: None,
+  preconditions: () => ({ ok: true }),
+  timeoutMs: () => 75_000,
+  stallMs: 40_000,
+  async run (ctx) {
+    ctx.env.nav.stop()
+    const dry = await ctx.env.nav.escapeWater(ctx.signal)
+    if (!dry) {
+      ctx.checkAbort()
+      throw new SkillFailure('NAV_HAZARD', 'no way out of the water', { key: 'hazard=water_trap' })
+    }
+    ctx.memory.blacklist = ctx.memory.blacklist.filter(b => b.key !== 'water_trap')
+    return { dry }
+  },
+  async onCancel (ctx) { ctx.env.nav.stop(); ctx.bot.clearControlStates() },
 }

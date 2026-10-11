@@ -5,7 +5,7 @@ import type { Dim, Objective, V3 } from '../schema/index.js'
 import { buildDigest } from './digest.js'
 import { EventBus } from './events.js'
 import type { BodyCell, BodyState, EntityInfo, Hazard, Location, ToolInfo, WorldMemory, WorldState } from './types.js'
-import { ARMOR_POINTS, ENTITY_KIND_GAPS, FISH, FOOD_ANIMALS, METADATA } from '../version.js'
+import { ARMOR_POINTS, ENTITY_KIND_GAPS, FISH, FOOD_ANIMALS, GHAST, METADATA } from '../version.js'
 import { ownAir } from './vitals.js'
 import { naturalTreeFilter } from './trees.js'
 
@@ -31,6 +31,30 @@ const MAX_ANIMAL_SPOTS = 24
 export const ANIMAL_SEEN_MAX = 144
 /** Logs in loaded chunks are remembered as tree spots (B round 3: respawned bots re-searched for wood they had seen). */
 export const TREES = { scanR: 160, cluster: 24, maxSpots: 24, perScan: 64, forgetWithin: 48, emptyR: 16 } as const
+
+/**
+ * Milestone C Nether memory, from loaded chunk data and tracked entities only. Natural nether
+ * bricks exist only in fortresses (1.16.1); polished blackstone bricks and gilded blackstone in
+ * bastions (and a few in ruined portals, hence the count). A spawner with nether bricks beside
+ * it is a fortress blaze spawner (bastion spawners hold magma cubes).
+ */
+export const NETHER_SCAN = {
+  r: 176, fortressBlocks: ['nether_bricks', 'nether_brick_fence', 'nether_brick_stairs'], fortressMin: 6, fortressCluster: 96,
+  bastionBlocks: ['polished_blackstone_bricks', 'cracked_polished_blackstone_bricks', 'gilded_blackstone', 'chiseled_polished_blackstone', 'polished_blackstone_brick_stairs', 'polished_blackstone_brick_slab', 'polished_blackstone_brick_wall'], bastionMin: 24, bastionCluster: 96,
+  spawnerBrickR: 5, mobCluster: 32, mobSpots: 16, mobSeenMax: 160,
+} as const
+/** Trail spacing and loop erasure (blocks). */
+export const TRAIL = { step: 6, loop: 4, loopDy: 3, max: 4000 } as const
+/** A piglin that swung at the bot this recently (s) before it was hurt marks piglins hostile for `ttlS`. */
+export const PROVOKED = { swingS: 1.2, ttlS: 60, dist: 4.5 } as const
+
+/** A drop of at least this many blocks emits a `fall` event (recorder). */
+export const FALL_LOG = 6
+/** Navigation failures that leave the bot trapped in the water (pathfinder.ts reasons). */
+const WATER_TRAP = /out of air|cannot surface|water exit failed|no path from water|in water/
+/** How long a water trap stays flagged after the last such failure. */
+const WATER_TRAP_S = 180
+function cellChar (c: BodyCell): string { return c === 'solid' ? 's' : c === 'air' ? 'a' : c === 'lava' ? 'l' : c === 'water' ? 'w' : c === 'fire' ? 'f' : '?' }
 
 export function toV3 (v: { x: number; y: number; z: number }): V3 {
   return [v.x, v.y, v.z]
@@ -70,9 +94,16 @@ export class Observer {
   private fallStartY: number | null = null
   private seenAt = new Map<number, number>()
   private lastDist = new Map<number, { d: number; t: number; closing: number }>()
+  /** Fall recorder (diagnosis of unexplained Nether falls, C dev batch 20261007-110334): recent moves and the ground left. */
+  private moves: { t: number; p: V3; g: boolean; c: string }[] = []
+  private takeoff: { t: number; p: V3; cells: string[]; skills: string[] } | null = null
+  private fallLogged = false
+  /** Last time (bus seconds) each ghast was seen charging a fireball. */
+  private ghastCharged = new Map<number, number>()
   /** Last position in the dimension being left (captured at the respawn packet, before the teleport). */
   private departure: V3 | null = null
   private diedSinceTransition = false
+  private piglinSwingAt = -Infinity
 
   constructor (readonly bot: Bot, readonly bus: EventBus) {
     for (const n of logBlockNames(bot)) this.interest.add(n)
@@ -84,12 +115,28 @@ export class Observer {
     this.lastInv = this.inventory()
     this.lastDim = this.dim()
     this.remember('spawn', toV3(bot.entity.position), 'observed')
+    // A route that failed on the water itself (no air, no exit) with the bot still in the water: the
+    // water trap escape runs before any objective (ckit-r2d r01: 1 200 s of retried routes from water).
+    bus.on(ev => {
+      if (ev.type !== 'nav_end' || ev.data.ok !== false) return
+      const why = String(ev.data.reason ?? '')
+      if (WATER_TRAP.test(why) && this.inWater()) this.blacklist('water_trap', why, WATER_TRAP_S)
+    })
 
     bot.on('health', () => {
       if (bot.health < this.lastHealth - 0.01) {
         bus.emit('damage', { from: round1(this.lastHealth), to: round1(bot.health), food: bot.food }, bot.health <= 8 ? 'warn' : 'info')
+        // Hurt right after a piglin swung at close range: piglins are hostile for a while (the
+        // client sees no damage source in 1.16.1; the swing animation is the evidence).
+        if (bus.now() - this.piglinSwingAt <= PROVOKED.swingS && !this.isBlacklisted('provoked:piglin')) {
+          this.blacklist('provoked:piglin', 'piglin hit the bot', PROVOKED.ttlS)
+          bus.emit('barter', { kind: 'provoked', hp: round1(bot.health) }, 'warn')
+        }
       }
       this.lastHealth = bot.health
+    })
+    bot.on('entitySwingArm', (e: Entity) => {
+      if (e.name === 'piglin' && e.position && bot.entity?.position && e.position.distanceTo(bot.entity.position) <= PROVOKED.dist) this.piglinSwingAt = bus.now()
     })
     bot.on('death', () => {
       this.diedSinceTransition = true
@@ -106,8 +153,10 @@ export class Observer {
       const e = bot.entity
       const inLiquid = Boolean((e as Entity & { isInWater?: boolean; isInLava?: boolean }).isInWater || (e as { isInLava?: boolean }).isInLava)
       if (e.onGround || inLiquid || this.fallStartY === null || e.position.y > this.fallStartY) this.fallStartY = e.position.y
+      if (e.onGround && !inLiquid && this.lastDim === 'the_nether') this.extendTrail(toV3(e.position.floored()))
+      this.recordFall(e.onGround || inLiquid)
     })
-    bot.on('entityGone', (e: Entity) => { this.seenAt.delete(e.id); this.lastDist.delete(e.id) })
+    bot.on('entityGone', (e: Entity) => { this.seenAt.delete(e.id); this.lastDist.delete(e.id); this.ghastCharged.delete(e.id) })
     // The respawn packet arrives before the new position: the entity still stands where it left.
     bot.on('respawn', () => { if (bot.entity?.position) this.departure = toV3(bot.entity.position) })
     bot.on('spawn', () => {
@@ -146,6 +195,7 @@ export class Observer {
     this.timers.push(setInterval(() => this.flushItemDelta(), 5000))
     this.timers.push(setInterval(() => { try { this.scanLavaPools() } catch { /* world not ready */ } }, 5000))
     this.timers.push(setInterval(() => { try { this.scanTrees() } catch { /* world not ready */ } }, 5000))
+    this.timers.push(setInterval(() => { try { this.scanNether() } catch { /* world not ready */ } }, 5000))
     bot.inventory.on('updateSlot', () => this.trackInventory())
   }
 
@@ -170,6 +220,68 @@ export class Observer {
     this.fallStartY = null
     this.bus.emit('dimension_change', { ...tr })
     if (cause === 'portal') void this.rememberArrivalPortal(to, toPos)
+    // A new Nether visit starts a new trail at the arrival point.
+    if (to === 'the_nether') this.memory.trail = { since: tr.t, points: [toPos.map(Math.floor) as V3] }
+  }
+
+  /**
+   * One trail point per TRAIL.step blocks walked in the Nether. Coming back within reach of an
+   * earlier point drops the loop in between, so the trail stays a loop-free way to the portal.
+   */
+  extendTrail (p: V3): void {
+    const tr = this.memory.trail
+    if (!tr) return
+    const pts = tr.points
+    const last = pts[pts.length - 1]
+    if (last && Math.hypot(p[0] - last[0], p[1] - last[1], p[2] - last[2]) < TRAIL.step) return
+    const k = pts.findIndex(q => Math.hypot(q[0] - p[0], q[2] - p[2]) <= TRAIL.loop && Math.abs(q[1] - p[1]) <= TRAIL.loopDy)
+    if (k >= 0 && k < pts.length - 1) { pts.length = k + 1; return }
+    if (k >= 0) return
+    pts.push(p)
+    if (pts.length > TRAIL.max) pts.splice(1, pts.length - TRAIL.max)
+  }
+
+  /**
+   * Nether structures in the loaded chunks (milestone C): fortress nether bricks, fortress blaze
+   * spawners and bastion blocks, each remembered as a cluster. Client-visible block data only.
+   */
+  scanNether (): void {
+    if (this.dim() !== 'the_nether') return
+    const reg = this.bot.registry.blocksByName
+    const me = this.bot.entity.position
+    const ids = (names: readonly string[]) => names.map(n => reg[n]?.id).filter((x): x is number => x !== undefined)
+    const byDist = (a: Vec3, b: Vec3) => a.distanceTo(me) - b.distanceTo(me)
+    const bricks = this.bot.findBlocks({ matching: ids(NETHER_SCAN.fortressBlocks), maxDistance: NETHER_SCAN.r, count: 64 }).sort(byDist)
+    if (bricks.length >= NETHER_SCAN.fortressMin) {
+      for (const c of clusterPoints(bricks.map(v => [v.x, v.y, v.z] as V3), NETHER_SCAN.fortressCluster)) {
+        if (c.n >= NETHER_SCAN.fortressMin) this.rememberStructure('fortress', c.pos, NETHER_SCAN.fortressCluster, { bricks: c.n })
+      }
+    }
+    const spawnerId = reg.spawner?.id
+    if (spawnerId !== undefined && bricks.length) {
+      for (const v of this.bot.findBlocks({ matching: spawnerId, maxDistance: NETHER_SCAN.r, count: 8 })) {
+        const near = this.bot.findBlocks({ matching: ids(NETHER_SCAN.fortressBlocks), maxDistance: NETHER_SCAN.spawnerBrickR, count: 1, point: v })
+        if (near.length) this.rememberStructure('blaze_spawner', [v.x, v.y, v.z], 4, {})
+      }
+    }
+    const bastion = this.bot.findBlocks({ matching: ids(NETHER_SCAN.bastionBlocks), maxDistance: NETHER_SCAN.r, count: 96 }).sort(byDist)
+    if (bastion.length >= NETHER_SCAN.bastionMin) {
+      for (const c of clusterPoints(bastion.map(v => [v.x, v.y, v.z] as V3), NETHER_SCAN.bastionCluster)) {
+        if (c.n >= NETHER_SCAN.bastionMin) this.rememberStructure('bastion', c.pos, NETHER_SCAN.bastionCluster, { blocks: c.n })
+      }
+    }
+  }
+
+  /** A structure cluster: refreshed (count kept at its maximum) when seen again, else new (location_discovered). */
+  private rememberStructure (kind: Location['kind'], pos: V3, cluster: number, detail: Record<string, number>): void {
+    const near = this.memory.locations.find(l => l.kind === kind && l.dim === 'the_nether' && Math.hypot(l.pos[0] - pos[0], l.pos[2] - pos[2]) < cluster)
+    if (near) {
+      near.lastSeen = this.bus.now()
+      for (const [k, v] of Object.entries(detail)) near.detail = { ...near.detail, [k]: Math.max(Number(near.detail?.[k] ?? 0), v) }
+      return
+    }
+    this.memory.locations.push({ kind, dim: 'the_nether', pos, confidence: 1, source: 'observed', lastSeen: this.bus.now(), detail })
+    this.bus.emit('location_discovered', { kind, dim: 'the_nether', pos: pos.map(Math.round), source: 'observed', detail })
   }
 
   /** Arrival portal: the nearest nether_portal block within 3 blocks, polled until its chunk is in. */
@@ -204,6 +316,14 @@ export class Observer {
     this.control.skillStack.length = 0
     this.control.interrupt = null
     this.memory.blacklist = this.memory.blacklist.filter(b => !b.key.startsWith('mob:'))
+    // Milestone C respawn point: a bed set beside the portal that did not take the respawn is gone or obstructed.
+    const bed = this.memory.locations.find(l => l.kind === 'bed' && l.dim === 'overworld' && l.detail?.set === true)
+    if (bed && this.dim() === 'overworld' && this.bot.entity?.position) {
+      const p = this.bot.entity.position
+      const d = Math.hypot(p.x - bed.pos[0], p.z - bed.pos[2])
+      if (d > 6) bed.detail = { ...bed.detail, set: false }
+      this.bus.emit('stash', { kind: d > 6 ? 'bed_lost' : 'respawn_at_bed', bed: bed.pos, dist: Math.round(d) }, d > 6 ? 'warn' : 'info')
+    }
   }
 
   addInterest (names: string[]): void {
@@ -297,6 +417,14 @@ export class Observer {
     this.memory.locations = this.memory.locations.filter(l => !(l.kind === kind && Math.hypot(l.pos[0] - pos[0], l.pos[1] - pos[1], l.pos[2] - pos[2]) <= radius))
   }
 
+  /** Feet or head in water. */
+  private inWater (): boolean {
+    const e = this.bot.entity
+    if ((e as Entity & { isInWater?: boolean }).isInWater) return true
+    const b = this.body()
+    return b.feet === 'water' || b.head === 'water'
+  }
+
   isBlacklisted (key: string): boolean {
     const now = this.bus.now()
     this.memory.blacklist = this.memory.blacklist.filter(b => b.until > now)
@@ -380,11 +508,17 @@ export class Observer {
     const me = this.bot.entity.position
     const eye = me.offset(0, 1.62, 0)
     const now = this.bus.now()
+    const nether = this.dim() === 'the_nether'
     const out: EntityInfo[] = []
     for (const e of Object.values(this.bot.entities) as Entity[]) {
       if (e === this.bot.entity || !e.position) continue
       const d = e.position.distanceTo(me)
-      if (d > 32) {
+      if (nether && d <= NETHER_SCAN.mobSeenMax && (e.name === 'piglin' || e.name === 'enderman')) {
+        this.rememberSpot(e.name === 'piglin' ? 'piglins' : 'endermen', toV3(e.position), now, NETHER_SCAN.mobCluster, NETHER_SCAN.mobSpots, {})
+      }
+      // Ghasts shoot from up to 64 blocks: they and their fireballs are tracked that far (C smoke r01).
+      const ghastFire = e.name === 'ghast' || e.name === GHAST.fireball
+      if (d > (ghastFire ? GHAST.range : 32)) {
         if (d <= ANIMAL_SEEN_MAX && isFoodAnimal(e)) this.rememberAnimal(toV3(e.position), now)
         continue
       }
@@ -398,8 +532,15 @@ export class Observer {
         // Land animals only: a fish sighting is a point in open water, often far below the surface
         // (re-gate 20260930: hunts walked back to "animal spots" at y 41–57 and swam down to drowned).
         if (kind === 'passive' && FOOD_ANIMALS[info.name] && !FISH.has(info.name) && ((e as unknown as { metadata?: unknown[] }).metadata ?? [])[METADATA.ageableBaby] !== true) this.rememberAnimal(info.pos, now)
-        if (d <= 24) info.los = lineOfSight(this.bot, eye, e.position.offset(0, (e.height ?? 1.6) * 0.85, 0))
+        if (d <= 24 || e.name === 'ghast') info.los = lineOfSight(this.bot, eye, e.position.offset(0, (e.height ?? 1.6) * 0.85, 0))
         const md = (e as unknown as { metadata?: unknown[] }).metadata ?? []
+        if (e.name === 'ghast') {
+          // Only the bot can be a ghast's target here: a charge means it is shooting at the bot.
+          if (md[METADATA.ghastCharging] === true) { info.charging = true; this.ghastCharged.set(e.id, now) }
+          const c = this.ghastCharged.get(e.id)
+          if (c !== undefined && now - c <= GHAST.aggroS) info.aggro = true
+        }
+        if (e.name === 'enderman' && md[METADATA.endermanScreaming] === true) info.aggro = true
         if (kind === 'passive' && md[METADATA.ageableBaby] === true) info.baby = true
         if (e.name === 'creeper' && md[METADATA.creeperSwell] === 1) info.swelling = true
         const held = (e as unknown as { heldItem?: { name?: string } | null }).heldItem
@@ -409,10 +550,19 @@ export class Observer {
         let closing = prev?.closing ?? 0
         if (prev && t - prev.t >= 200) { closing = Math.round(((prev.d - d) / ((t - prev.t) / 1000)) * 10) / 10; this.lastDist.set(e.id, { d, t, closing }) } else if (!prev) this.lastDist.set(e.id, { d, t, closing: 0 })
         info.closing = closing
+      } else if (e.name === GHAST.fireball) {
+        // Speed toward the bot (3D, blocks/s): an incoming fireball is shield-blocked (P0 deflect).
+        const prev = this.lastDist.get(e.id)
+        const t = Date.now()
+        let closing = prev?.closing ?? 0
+        if (prev && t - prev.t >= 100) { closing = Math.round(((prev.d - d) / ((t - prev.t) / 1000)) * 10) / 10; this.lastDist.set(e.id, { d, t, closing }) } else if (!prev) this.lastDist.set(e.id, { d, t, closing: 0 })
+        info.closing = closing
       }
       out.push(info)
     }
-    return out.sort((a, b) => a.dist - b.dist).slice(0, 24)
+    out.sort((a, b) => a.dist - b.dist)
+    // Far ghasts and fireballs are kept beyond the 24 nearest (they matter most at range).
+    return [...out.slice(0, 24), ...out.slice(24).filter(x => x.name === 'ghast' || x.name === GHAST.fireball)]
   }
 
   private cellAt (x: number, y: number, z: number): BodyCell {
@@ -424,6 +574,36 @@ export class Observer {
     const props = (b as unknown as { getProperties?: () => Record<string, unknown> }).getProperties?.() ?? {}
     if (props.waterlogged === true) return 'water'
     return b.boundingBox === 'block' ? 'solid' : 'air'
+  }
+
+  /**
+   * On every move: a ring of recent positions with ground state and controls; when the bot leaves
+   * the ground the 3 × 3 columns around the take-off cell (y −6 … +2, one character per block:
+   * s solid, a air, l lava, w water, f fire, ? unloaded); once a drop exceeds FALL_LOG blocks one
+   * `fall` event carries both. Diagnosis only.
+   */
+  private recordFall (grounded: boolean): void {
+    const e = this.bot.entity
+    const now = Date.now()
+    const ctl = (this.bot as unknown as { controlState?: Record<string, boolean> }).controlState ?? {}
+    this.moves.push({ t: now, p: toV3(e.position).map(round1) as V3, g: grounded, c: Object.entries(ctl).filter(([, v]) => v).map(([k]) => k[0]).join('') })
+    while (this.moves.length > 40 || (this.moves.length && now - this.moves[0]!.t > 4000)) this.moves.shift()
+    if (grounded) { this.takeoff = null; this.fallLogged = false; return }
+    if (!this.takeoff) {
+      const f = e.position.floored()
+      const cells: string[] = []
+      for (let dy = 2; dy >= -6; dy--) {
+        let row = ''
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) row += cellChar(this.cellAt(f.x + dx, f.y + dy, f.z + dz))
+        cells.push(row)
+      }
+      this.takeoff = { t: now, p: toV3(e.position).map(round1) as V3, cells, skills: this.control.skillStack.map(x => x.skill) }
+    }
+    const drop = this.takeoff.p[1] - e.position.y
+    if (!this.fallLogged && drop >= FALL_LOG) {
+      this.fallLogged = true
+      this.bus.emit('fall', { dim: this.dim(), drop: round1(drop), takeoff: this.takeoff, moves: this.moves.slice(-30) }, 'warn')
+    }
   }
 
   body (): BodyState {
@@ -444,8 +624,24 @@ export class Observer {
     const fy = Math.floor(p.y + 0.05)
     const enclosed = feet !== 'solid' && head !== 'solid' && solid(fx, fy + 2, fz) &&
       [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dz]) => solid(fx + dx!, fy, fz + dz!) && solid(fx + dx!, fy + 1, fz + dz!))
+    const floor = this.bot.blockAt(new Vec3(fx, Math.floor(p.y + 0.05) - 1, fz), false)?.name
+    // The hitbox (0.6 wide) overlaps up to four columns: fire beside the centre column burns too
+    // (C smoke r01: 1 HP every half second after a ghast fireball, feet and head read 'air').
+    let inFire = false
+    for (const x of new Set([Math.floor(p.x - 0.3), Math.floor(p.x + 0.3)])) {
+      for (const z of new Set([Math.floor(p.z - 0.3), Math.floor(p.z + 0.3)])) {
+        for (const y of new Set([fy, Math.floor(p.y + 1.62)])) if (this.cellAt(x, y, z) === 'fire') inFire = true
+      }
+    }
+    // Standing in a portal: 4 s (80 ticks) there teleports (ckit-r2d r02: the bed staging stood in it).
+    let inPortal = false
+    for (const x of new Set([Math.floor(p.x - 0.3), Math.floor(p.x + 0.3)])) {
+      for (const z of new Set([Math.floor(p.z - 0.3), Math.floor(p.z + 0.3)])) {
+        for (const y of new Set([fy, Math.floor(p.y + 1.62)])) if (this.bot.blockAt(new Vec3(x, y, z), false)?.name === 'nether_portal') inPortal = true
+      }
+    }
     return {
-      feet, head, enclosed,
+      feet, head, enclosed, ...(floor ? { floor } : {}), ...(inFire ? { inFire } : {}), ...(inPortal ? { inPortal } : {}),
       velY: Math.round((e.velocity?.y ?? 0) * 100) / 100,
       fallDist: this.fallStartY === null ? 0 : Math.max(0, Math.round((this.fallStartY - p.y) * 10) / 10),
       light: fb && typeof fb.light === 'number' && typeof fb.skyLight === 'number' ? { block: fb.light, sky: fb.skyLight } : null,

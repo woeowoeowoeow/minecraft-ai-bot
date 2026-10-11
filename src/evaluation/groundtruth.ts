@@ -94,3 +94,12 @@ export function parseDimension (line: string, username: string): string | null {
 export function milestoneBVerified (g: { advancements: string[]; dimension: string | null; portalCheck: boolean | null }): boolean {
   return g.advancements.includes(NETHER_ADVANCEMENT) && g.dimension === 'overworld' && g.portalCheck === true
 }
+
+/**
+ * Server-side check of milestone C: milestone B's checks (Nether-entry advancement, a lit portal
+ * at the cell the bot reports having built, Overworld at the end), plus ≥ 7 blaze rods and
+ * ≥ 14 ender pearls in the server's inventory of the bot.
+ */
+export function milestoneCVerified (g: { advancements: string[]; dimension: string | null; portalCheck: boolean | null; inventory: Record<string, number> | null }, rods = 7, pearls = 14): boolean {
+  return milestoneBVerified(g) && !!g.inventory && (g.inventory.blaze_rod ?? 0) >= rods && (g.inventory.ender_pearl ?? 0) >= pearls
+}

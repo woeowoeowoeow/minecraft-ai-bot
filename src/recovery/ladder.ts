@@ -12,8 +12,10 @@ export type RecoveryAction =
   | { kind: 'suspend'; level: 'L3'; seconds: number; note: string }
   | { kind: 'terminate'; level: 'L5'; note: string }
 
+export type StrategyEntry = { id: string; params?: Record<string, unknown>; skill?: string }
+
 /** Strategy catalog for obtain-style objectives: the same goal with more search. */
-export const STRATEGIES: { id: string; params: Record<string, unknown> }[] = [
+export const STRATEGIES: StrategyEntry[] = [
   { id: 'default', params: {} },
   { id: 'wide', params: { searchSteps: 12 } },
 ]
@@ -48,7 +50,13 @@ type ObjState = { total: number; bySig: Record<string, number>; strategy: number
 export class Recovery {
   private objs = new Map<string, ObjState>()
 
-  constructor (private readonly now: () => number) {}
+  /** `catalog`: an objective's own strategy catalog (RequirementDef.strategies), if it has one. */
+  constructor (private readonly now: () => number, private readonly catalog: (id: string) => StrategyEntry[] | undefined = () => undefined) {}
+
+  private strategiesOf (id: string): StrategyEntry[] {
+    const c = this.catalog(id)
+    return c && c.length ? c : STRATEGIES
+  }
 
   private get (id: string): ObjState {
     let o = this.objs.get(id)
@@ -60,8 +68,11 @@ export class Recovery {
     return this.get(id).suspendedUntil > this.now()
   }
 
-  strategy (id: string): { id: string; params: Record<string, unknown> } {
-    return STRATEGIES[Math.min(this.get(id).strategy, STRATEGIES.length - 1)]!
+  strategy (id: string): StrategyEntry & { params: Record<string, unknown>; index: number; own: boolean } {
+    const cat = this.strategiesOf(id)
+    const index = Math.min(this.get(id).strategy, cat.length - 1)
+    const e = cat[index]!
+    return { ...e, params: e.params ?? {}, index, own: cat !== STRATEGIES }
   }
 
   /** Wall time spent on an objective's attempts (success or not). */
@@ -121,10 +132,11 @@ export class Recovery {
     }
     // L3: the next strategy, then suspension.
     o.bySig = {}
-    if (o.strategy < STRATEGIES.length - 1) {
+    const cat = this.strategiesOf(obj.id)
+    if (o.strategy < cat.length - 1) {
       o.strategy++
       o.elapsedMs = 0
-      return { kind: 'alternate', level: 'L3', strategy: STRATEGIES[o.strategy]!.id, note: overBudget ? `objective over budget; strategy ${STRATEGIES[o.strategy]!.id}` : `strategy ${STRATEGIES[o.strategy]!.id}` }
+      return { kind: 'alternate', level: 'L3', strategy: cat[o.strategy]!.id, note: overBudget ? `objective over budget; strategy ${cat[o.strategy]!.id}` : `strategy ${cat[o.strategy]!.id}` }
     }
     o.strategy = 0
     o.elapsedMs = 0

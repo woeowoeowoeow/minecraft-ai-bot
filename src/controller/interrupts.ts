@@ -4,8 +4,9 @@
 import type { WorldState } from '../observer/types.js'
 import { chooseFood, armorUpgrades, cookableRaw, EMERGENCY, foodPoints, wantsShield } from '../skills/food.js'
 import { isUsefulDrop, surplus } from '../skills/inventory.js'
-import { assessThreat, capacity, isNight, RETREAT_HP, weakState } from '../skills/survival/threat.js'
+import { assessThreat, capacity, isNight, menacing, piglinsProvoked, RETREAT_HP, weakState } from '../skills/survival/threat.js'
 import { AQUATIC, aquaticThreats, isAquatic, waterCellsNear } from '../skills/survival/aquatic.js'
+import { wantsDeflect } from '../skills/survival/ghast.js'
 import { countOf, GROUPS, planObtain } from '../skills/sources.js'
 import { cookedCount } from '../skills/food.js'
 import { hintsFrom } from '../skills/generic/obtain.js'
@@ -42,13 +43,41 @@ export const HOLD_HOSTILE_DIST = 8
 export const WEAK_HOLD_DIST = 16
 /** A weak bot (threat.ts weakState) stays in its sealed pocket while a hostile is this close. */
 export const WEAK_POCKET_DIST = 12
+/**
+ * An angry (screaming) enderman teleports back within seconds: the bot stays sealed in while one is
+ * this close (ckit-r2b r02: twice dug in at 12 HP, left the pocket at once, killed 20 → 0 in 2 s).
+ */
+export const ENDERMAN_HOLD_DIST = 32
 /** Health at or below which the bot rests (when fed) instead of pursuing its objective. */
 export const REST_BELOW = 10
+
+/** Skills that stand in a portal on purpose (they cross it, or build and light it). */
+export const PORTAL_SKILLS: ReadonlySet<string> = new Set(['usePortal', 'netherExcursion', 'buildNetherPortal'])
 
 /** Bulk blocks: picked up by the skills that dig them, never worth preempting an objective for. */
 const BULK = /^(cobblestone|dirt|stone|gravel|sand|grass_block|coarse_dirt|netherrack|.*_planks|stick)$/
 /** Objective skills that collect their own drops, or dig bulk blocks not worth a detour (portal site work). */
-const SELF_COLLECTING = new Set(['collect', 'mine', 'hunt', 'obtain', 'buildNetherPortal', 'netherExcursion', 'usePortal'])
+const SELF_COLLECTING = new Set(['collect', 'mine', 'hunt', 'obtain', 'buildNetherPortal', 'netherExcursion', 'usePortal', 'findFortress', 'collectBlazeRods', 'barterPearls', 'huntEndermen'])
+
+/**
+ * Milestone C skills that handle one kind of mob themselves (blazes with sword, shield and their
+ * own retreat; piglins as trade partners; endermen as prey). While one runs above OWN_MOBS_HP,
+ * P1 ignores that kind; every other mob, and any low-health state, stays with P1.
+ */
+export const OWN_MOBS: Record<string, ReadonlySet<string>> = {
+  collectBlazeRods: new Set(['blaze']),
+  barterPearls: new Set(['piglin']),
+  huntEndermen: new Set(['enderman']),
+}
+export const OWN_MOBS_HP = 8
+
+export function ignoredMobs (s: WorldState, skill: string | null): ReadonlySet<string> | undefined {
+  const own = skill ? OWN_MOBS[skill] : undefined
+  if (!own || s.vitals.health <= OWN_MOBS_HP) return undefined
+  // Provoked piglins are enemies again, whatever the skill.
+  if (own.has('piglin') && piglinsProvoked(s)) return undefined
+  return own
+}
 
 export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: string | null; priority: Priority | null }): Interrupt | null {
   const b = s.body
@@ -56,7 +85,7 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   if (b.feet === 'lava' || b.head === 'lava' || s.inLiquid === 'lava') {
     return { id: 'escape_lava', priority: P.emergency, skill: 'escapeLava', params: {}, reason: 'in lava' }
   }
-  if (b.feet === 'fire' || b.head === 'fire') {
+  if (b.feet === 'fire' || b.head === 'fire' || b.inFire) {
     return { id: 'escape_fire', priority: P.emergency, skill: 'escapeLava', params: {}, reason: 'in fire' }
   }
   // Burning out of the lava with a water bucket: put the fire out (1 HP/s for up to 15 s). Only
@@ -65,26 +94,51 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   if (s.vitals.onFire && s.dim === 'overworld' && s.inLiquid === 'none' && s.onGround && !lavaWithin(s, EXTINGUISH_CLEAR) && (s.inventory.water_bucket ?? 0) > 0 && !cd.active('extinguish')) {
     return { id: 'extinguish', priority: P.emergency, skill: 'extinguish', params: {}, reason: `on fire, hp ${Math.round(s.vitals.health)}` }
   }
+  // Standing on magma burns (1 HP every half second) unless sneaking; Nether only (ckit3 r01: died
+  // mining at y 35 on a magma patch by the lava sea).
+  if (s.dim === 'the_nether' && b.floor === 'magma_block' && s.onGround && !cd.active('magma')) {
+    return { id: 'magma', priority: P.emergency, skill: 'stepOffMagma', params: {}, reason: 'standing on magma' }
+  }
   if (b.head === 'water' && s.vitals.air < P0_AIR && !cd.active('surface')) {
     return { id: 'surface', priority: P.emergency, skill: 'surfaceForAir', params: {}, reason: `air ${s.vitals.air}` }
+  }
+  // Standing in a portal outside the portal skills: 4 s there teleports (ckit-r2d r02).
+  if (b.inPortal && !PORTAL_SKILLS.has(active.skill ?? '') && !cd.active('leave_portal')) {
+    return { id: 'leave_portal', priority: P.emergency, skill: 'leavePortal', params: {}, reason: 'standing in a portal' }
+  }
+  // A route failed on the water itself (no air, no exit) and the bot is still in it: out first.
+  if (s.inLiquid === 'water' && s.memory.blacklist.some(x => x.key === 'water_trap' && x.until > s.t) && !cd.active('water_escape')) {
+    return { id: 'water_escape', priority: P.emergency, skill: 'escapeWater', params: {}, reason: 'trapped in water' }
   }
   if (b.head === 'solid' && !cd.active('suffocation')) {
     return { id: 'suffocation', priority: P.emergency, skill: 'escapeSuffocation', params: {}, reason: 'head inside a block' }
   }
+  // Ghast fire (milestone C): shield up toward an incoming fireball or a charging ghast in sight.
+  // `cover` blocks between its own steps (ghast.ts shieldUp): never cut off mid-dig-in.
+  const shot = s.dim === 'the_nether' && active.skill !== 'cover' ? wantsDeflect(s) : null
+  if (shot && !cd.active('deflect')) {
+    return { id: 'deflect', priority: P.emergency, skill: 'deflect', params: { targetId: shot.id }, reason: `${shot.name}@${shot.dist}${shot.charging ? ' charging' : ''}` }
+  }
 
   // ── P1 threat ────────────────────────────────────────────────────────────
   // Inside a sealed dig-in no mob can reach or see the bot: stay put (leaving is the danger).
-  const th = assessThreat(s)
+  const th = assessThreat(s, ignoredMobs(s, active.skill))
   if (th.engage && th.primary && !s.body.enclosed) {
     const id = th.primary.e.id
     const creeper = MOB_THREATS[th.primary.e.name]?.explosive === true
     let action = th.action as 'defend' | 'flee' | 'cover'
-    if (action === 'cover' && cd.active(`cover:${id}`)) action = 'flee'
+    const avoid = MOB_THREATS[th.primary.e.name]?.avoid === true
+    // A shooter far off whose cover is cooling down: running gains nothing (ckit8 r01: a ghast at 30
+    // blocks drew 30 instant flees in 4 s). Closer, the old flee fallback stays.
+    const farShooter = action === 'cover' && th.primary.ranged && th.primary.e.dist > FAR_SHOOTER
+    if (action === 'cover' && cd.active(`cover:${id}`)) action = farShooter ? 'none' as never : 'flee'
     if (action === 'defend' && cd.active(`defend:${id}`)) action = 'flee'
     // In water an aquatic hostile is never fought (threat.ts): fleeing to land stays the answer.
     const wet = s.inLiquid === 'water' && isAquatic(th.primary.e.name)
-    if (action === 'flee' && cd.active(`flee:${id}`) && !creeper && !wet) action = s.vitals.health > RETREAT_HP && !cd.active(`defend:${id}`) ? 'defend' : 'flee'
-    const blocked = cd.active(`${action}:${id}`) && !wet
+    // Avoided mobs (hoglins, magma cubes) are never fought, even when flight failed (ckit8 r01: died in the
+    // `defend` that followed a failed flight from a hoglin).
+    if (action === 'flee' && cd.active(`flee:${id}`) && !creeper && !wet && !avoid) action = s.vitals.health > RETREAT_HP && !cd.active(`defend:${id}`) ? 'defend' : 'flee'
+    const blocked = (action as string) === 'none' || (cd.active(`${action}:${id}`) && !wet && !(avoid && action === 'flee'))
     if (!blocked) {
       return { id: action, priority: P.threat, skill: action, params: { targetId: id }, reason: `${th.primary.e.name}@${th.primary.e.dist}: ${th.reason}` }
     }
@@ -93,7 +147,7 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   // ── P2 maintenance ───────────────────────────────────────────────────────
   // Night with hostiles about and nothing to fight with: hide until it passes.
   if (isNight(s) && !s.body.covered && !s.body.enclosed && s.inLiquid === 'none' && capacity(s) < SHELTER_BELOW &&
-    s.nearby.entities.some(e => e.kind === 'hostile' && e.dist < 20) && !cd.active('shelter')) {
+    s.nearby.entities.some(e => menacing(e, s) && e.dist < 20) && !cd.active('shelter')) {
     return { id: 'shelter', priority: P.maintenance, skill: 'shelter', params: {}, reason: `night, capacity ${capacity(s)}` }
   }
   // Hungry with only raw meat: cook a few first (a cooked porkchop restores 8, a raw one 3).
@@ -110,7 +164,7 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   // Hurt with a full stomach: stand still while natural regeneration works (P1 still preempts).
   // Never in the open with a hostile in sight (B gate 20261002 r11: rested at 4 HP with a zombie
   // at 9.7 blocks, outside the engage range, and died three seconds later).
-  const exposed = !s.body.enclosed && s.nearby.entities.some(e => e.kind === 'hostile' && e.dist < WEAK_HOLD_DIST && e.los !== false)
+  const exposed = !s.body.enclosed && s.nearby.entities.some(e => menacing(e, s) && e.dist < WEAK_HOLD_DIST && e.los !== false)
   if (s.vitals.health <= REST_BELOW && s.vitals.food >= 18 && !th.engage && !exposed && !cd.active('rest')) {
     return { id: 'rest', priority: P.maintenance, skill: 'rest', params: {}, reason: `hp ${s.vitals.health}` }
   }
@@ -126,7 +180,7 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   if (s.body.enclosed) {
     // A weak bot also waits out hostiles further off (from inside the pocket nothing is in sight).
     const weak = weakState(s, th.capacity)
-    const near = s.nearby.entities.filter(e => e.kind === 'hostile' && e.dist < (weak ? WEAK_POCKET_DIST : HOLD_HOSTILE_DIST))
+    const near = s.nearby.entities.filter(e => menacing(e, s) && (e.dist < (weak ? WEAK_POCKET_DIST : HOLD_HOSTILE_DIST) || (e.name === 'enderman' && e.aggro === true && e.dist < ENDERMAN_HOLD_DIST)))
     if (near.length && !cd.active('hold')) {
       const r = Math.max(HOLD_HOSTILE_DIST, ...near.map(e => Math.ceil(e.dist) + 1))
       return { id: 'hold', priority: P.maintenance, skill: 'shelter', params: { maxMs: 30_000, whileThreat: true, near: r, ...(weak ? { weak: true } : {}) }, reason: `sealed in, hostiles near${weak ? ' (weak)' : ''}` }
@@ -147,6 +201,9 @@ export function selectInterrupt (s: WorldState, cd: Cooldowns, active: { skill: 
   }
   return null
 }
+
+/** A shooter beyond this distance whose cover is cooling down draws no interrupt. */
+export const FAR_SHOOTER = 16
 
 /** Lava this close (blocks) rules out stopping to put a fire out. */
 export const EXTINGUISH_CLEAR = 2.5

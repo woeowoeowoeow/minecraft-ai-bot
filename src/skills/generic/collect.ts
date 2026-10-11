@@ -30,6 +30,11 @@ const Params = z.object({
   searchSteps: z.number().int().min(0).default(6),
   /** The item is a chance drop (flint from gravel): when no block is left, place the block item and dig it again. */
   chance: z.boolean().default(false),
+  /**
+   * Only blocks within maxDist of the bot, reached on a dry route: no loaded-log scan, no tree spots,
+   * no search (C staging wood: ckit-r2d r01 drowned on a kit-wood search across a frozen ocean).
+   */
+  local: z.boolean().optional(),
 })
 type P = z.infer<typeof Params>
 
@@ -179,7 +184,7 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
     const zones = () => isLog ? woodZones(ctx.state()) : []
     let inlandMoves = 0
     // Trees grow on the surface: leave the mine first.
-    if (p.block === 'log' && ctx.state().body.covered && !candidates(bot, p, k => ctx.env.isBlacklisted(k), zones()).some(v => Math.abs(v.y - bot.entity.position.y) < 4)) await toSurface(ctx)
+    if (p.block === 'log' && !p.local && ctx.state().body.covered && !candidates(bot, p, k => ctx.env.isBlacklisted(k), zones()).some(v => Math.abs(v.y - bot.entity.position.y) < 4)) await toSurface(ctx)
 
     while (have(ctx.state(), p) < p.count) {
       ctx.checkAbort()
@@ -224,6 +229,7 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
         }
         if (list.length === 0) {
           // Logs beyond the normal target range but loaded: walk over first (the area is not treeless).
+          if (p.local) throw new SkillFailure('NOT_FOUND', `no ${p.block} within ${p.maxDist} blocks (local)`, { key: `target=${p.block}`, targetsTried })
           const far = isLog && spotVisits < TREE_SPOT.perRun ? candidates(bot, { ...p, maxDist: WIDE_LOG_SCAN }, k => ctx.env.isBlacklisted(k), zones())[0] : undefined
           if (far) {
             spotVisits++
@@ -265,12 +271,12 @@ export const collect: SkillDef<P, { collected: number; targetsTried: number; sea
       current = target
       if (isLog) wood = [target.x, target.y, target.z]
       targetsTried++
-      const r = await ctx.nav.goto({ kind: 'reach', target: [target.x, target.y, target.z], range: 4.5 })
+      const r = await ctx.nav.goto({ kind: 'reach', target: [target.x, target.y, target.z], range: 4.5, ...(p.local ? { dry: true } : {}) })
       if (!r.ok) {
         targetFailures++
         const n = blacklistCluster(bot, target, blockMatcher(p.block), (k, why) => ctx.env.blacklist(k, why), r.class)
         ctx.localRecovery(`blacklist target (+${n - 1} beside it) after ${r.class}`)
-        if (targetFailures >= MAX_TARGET_FAILURES) {
+        if (targetFailures >= (p.local ? 2 : MAX_TARGET_FAILURES)) {
           throw new SkillFailure(r.class === 'CANCELLED' ? 'STATE_INCONSISTENT' : r.class, `${targetFailures} targets failed to reach; last ${r.class}`, { key: `target=${p.block}`, lastNav: r.detail, targetsTried, searchTarget: true }, r.detail.missing)
         }
         continue
@@ -321,6 +327,14 @@ export async function pickup (ctx: SkillCtx, at: Vec3, gained: () => boolean): P
       continue
     }
     const p = item.position
+    // The Nether (milestone C): a drop that rolled down a cliff is left; the walk never digs or builds
+    // (ckit10 r01: chasing nuggets by excavation under the roof fell 17 blocks, then into lava).
+    if (ctx.state().dim === 'the_nether') {
+      if (Math.abs(p.y - ctx.bot.entity.position.y) > 3) return
+      await ctx.nav.goto({ kind: 'near', target: [Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)], range: 0.8, mode: 'walk' }, { profile: 'nether_travel', timeoutMs: 8000 })
+      if (await waitFor(gained, 1500, ctx.signal)) return
+      continue
+    }
     await ctx.nav.goto({ kind: 'near', target: [Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)], range: 0.8 }, { timeoutMs: 12_000 })
     if (await waitFor(gained, 1500, ctx.signal)) return
   }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { Vec3 } from 'vec3'
 import { mapView } from '../../src/nav/blocks.js'
+import { recentreUnsafe, unsafeFall } from '../../src/nav/fall-guard.js'
 import { cardinalToYaw, digReleasesLiquid, needsAir, stepHazard, unstickDirections, yawToCardinal } from '../../src/nav/hazards.js'
 
 // Flat stone ground: floor top at y 63, the bot stands with feet at y 64.
@@ -45,6 +47,16 @@ describe('hazard-aware unstick (open item: jump-forward into lava)', () => {
     expect(unstickDirections(mapView(ground, moat), FEET, EAST, 1)).toEqual([])
   })
 
+  it('ckit-r2c r01: a direction whose second cell drops into lava comes after the safe ones', () => {
+    // East: one cell of ledge, then a 7-block drop into lava (momentum carried the bot past the first cell).
+    const ledge: Record<string, string> = {}
+    for (let y = 56; y <= 63; y++) ledge[`2,${y},0`] = y <= 57 ? 'lava' : 'air'
+    const dirs = unstickDirections(mapView(ground, ledge), FEET, EAST, 1)
+    expect(dirs).toContainEqual([1, 0])
+    expect(dirs[0]).not.toEqual([1, 0])
+    expect(dirs[dirs.length - 1]).toEqual([1, 0])
+  })
+
   it('never digs a block that would release lava or water', () => {
     expect(digReleasesLiquid(mapView(ground, { '1,66,0': 'lava' }), [1, 65, 0])).toBe(true)
     expect(digReleasesLiquid(mapView(ground, { '1,65,1': 'water' }), [1, 65, 0])).toBe(true)
@@ -59,5 +71,23 @@ describe('air reflex (open item: exitWater had none)', () => {
     expect(needsAir(true, 3000, 20, o)).toBe(true)
     expect(needsAir(true, 100, 20, o)).toBe(false)
     expect(needsAir(false, 99_999, 0, o)).toBe(false)
+  })
+})
+
+describe('fall guard (ckit-r2d: re-centring and jumps off Nether ledges)', () => {
+  // A ledge: full blocks at y 63 for x ≤ 0, air beyond.
+  const solid = (x: number, y: number) => y === 63 && x <= 0
+  it('vetoes a re-centre that takes the bot off its only floor column', () => {
+    expect(recentreUnsafe(solid, new Vec3(1.1, 64, 0.5), new Vec3(1.5, 64, 0.5))).toBe(true)
+    expect(recentreUnsafe(solid, new Vec3(-0.9, 64, 0.5), new Vec3(-0.5, 64, 0.5))).toBe(false)
+    // Already off the floor: nothing to protect.
+    expect(recentreUnsafe(solid, new Vec3(1.6, 64, 0.5), new Vec3(1.5, 64, 0.5))).toBe(false)
+  })
+  it('treats long drops, no landing and lava as unsafe, water and short drops as safe', () => {
+    expect(unsafeFall({ drop: 30, landed: false, lava: false, water: false })).toBe(true)
+    expect(unsafeFall({ drop: 5, landed: true, lava: false, water: false })).toBe(true)
+    expect(unsafeFall({ drop: 1, landed: true, lava: true, water: false })).toBe(true)
+    expect(unsafeFall({ drop: 4, landed: true, lava: false, water: false })).toBe(false)
+    expect(unsafeFall({ drop: 12, landed: true, lava: false, water: true })).toBe(false)
   })
 })

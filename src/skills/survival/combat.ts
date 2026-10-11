@@ -8,7 +8,7 @@ import { CREEPER, MOB_THREATS, WEAPONS } from '../../version.js'
 import { equipItem } from '../acts.js'
 import { sleep } from '../runner.js'
 import { SkillFailure, type SkillCtx, type SkillDef } from '../types.js'
-import { assessThreat, bestWeapon, CREEPER_SPACING, hasShield, isNight, RANGED_MELEE_DIST, RETREAT_HP, weakState } from './threat.js'
+import { assessThreat, bestWeapon, CREEPER_SPACING, hasShield, isNight, menacing, RANGED_MELEE_DIST, RETREAT_HP, weakState } from './threat.js'
 import { digIn } from './cover.js'
 import { atWater, isAquatic, waterCellsNear } from './aquatic.js'
 
@@ -209,7 +209,7 @@ export const flee: SkillDef<P, { dist: number }> = {
         // Safe for now, but weak: stay safe (seal a pocket) rather than walk back out at night or
         // with the mobs still about (B gate 20261002 r11: rested at 4 HP with the zombie at 9.7 blocks).
         const st2 = ctx.state()
-        if (weakState(st2) && st2.inLiquid === 'none' && !st2.body.enclosed && (isNight(st2) || st2.nearby.entities.some(e => e.kind === 'hostile' && e.dist < 20))) {
+        if (weakState(st2) && st2.inLiquid === 'none' && !st2.body.enclosed && (isNight(st2) || st2.nearby.entities.some(e => menacing(e, st2) && e.dist < 20))) {
           const d = await digIn(ctx, 1)
           ctx.log('cover', { ok: d.ok, method: 'dig_in', why: d.reason, capped: d.capped, step: true, after: 'flee' })
         }

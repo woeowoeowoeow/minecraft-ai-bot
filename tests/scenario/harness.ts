@@ -47,7 +47,7 @@ export type Fixture = {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 /** `spawnAnimals`: the 1.16.1 server removes summoned animals when spawn-animals=false. */
-export type FixtureOptions = { difficulty?: 'peaceful' | 'easy' | 'normal'; keepInventory?: boolean; spawnAnimals?: boolean }
+export type FixtureOptions = { difficulty?: 'peaceful' | 'easy' | 'normal'; keepInventory?: boolean; spawnAnimals?: boolean; spawnMonsters?: boolean }
 
 export async function startFixture (name: string, fo: FixtureOptions = {}): Promise<Fixture> {
   const registry = new ProcessRegistry(join(ROOT, '.cache', 'pids'))
@@ -55,7 +55,7 @@ export async function startFixture (name: string, fo: FixtureOptions = {}): Prom
   const worldDir = join(WORLDS, `scenario-${name}-${Date.now()}`)
   const server = new ServerProcess({
     worldDir, port, seed: '1', jarPath: JAR, javaBin: resolveJava(ROOT).bin,
-    properties: { 'level-type': 'flat', 'generate-structures': 'false', difficulty: fo.difficulty ?? 'peaceful', 'spawn-monsters': 'false', 'spawn-animals': String(fo.spawnAnimals ?? false) },
+    properties: { 'level-type': 'flat', 'generate-structures': 'false', difficulty: fo.difficulty ?? 'peaceful', 'spawn-monsters': String(fo.spawnMonsters ?? false), 'spawn-animals': String(fo.spawnAnimals ?? false) },
   }, registry)
   await server.start()
   const cmd = async (line: string) => { server.command(line); await sleep(60) }

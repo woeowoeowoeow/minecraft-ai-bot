@@ -1,9 +1,9 @@
-// Full milestone-A skill runtime on a fixture bot: Observer, SkillRunner with
+// Full skill runtime (milestones A–C) on a fixture bot: Observer, SkillRunner with
 // every A skill, and the same SkillEnv the bot process builds (src/bot/main.ts).
 import { mulberry32 } from '../../src/bot/rng.js'
 import { Observer } from '../../src/observer/observer.js'
 import type { SkillResult } from '../../src/schema/index.js'
-import { registerBSkills } from '../../src/skills/registry.js'
+import { registerCSkills } from '../../src/skills/registry.js'
 import { SkillRunner } from '../../src/skills/runner.js'
 import type { SkillEnv } from '../../src/skills/types.js'
 import type { Fixture } from './harness.js'
@@ -23,7 +23,7 @@ export function runtime (f: Fixture): Runtime {
     random: mulberry32(11),
     capture: () => {},
   }
-  const runner = registerBSkills(new SkillRunner(env))
+  const runner = registerCSkills(new SkillRunner(env))
   return {
     obs, runner, env,
     run: async (skill, params) => {

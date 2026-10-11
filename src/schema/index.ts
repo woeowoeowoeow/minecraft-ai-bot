@@ -42,7 +42,7 @@ export const NavGoalS = z.object({
 })
 export type NavGoal = z.infer<typeof NavGoalS>
 
-export const NavProfileS = z.enum(['overworld', 'overworld_cautious', 'nether', 'end', 'stronghold'])
+export const NavProfileS = z.enum(['overworld', 'overworld_cautious', 'nether', 'nether_travel', 'end', 'stronghold'])
 export type NavProfile = z.infer<typeof NavProfileS>
 
 // MISSING_RESOURCE: the chosen strategy needs an item the bot lacks (e.g. a pickaxe to excavate).
@@ -135,7 +135,7 @@ export const EventTypeS = z.enum([
   'inventory_desync', 'chat', 'disconnect', 'intervention', 'capture',
   'physics_correction', 'navbench_trial', 'navbench_setup', 'error', 'excavation_step', 'water_event', 'dig_ack_correction',
   // Milestone A survival telemetry: ranged-threat cover attempts, death context, day/night scheduling.
-  'cover', 'death_context', 'schedule',
+  'cover', 'deflect', 'fall', 'fall_guard', 'death_context', 'schedule',
   // Shoreline food risk: rejected and abandoned food targets, inland relocations.
   'food_risk',
   // Milestone B: portal construction steps, lava-pool candidates, Nether arrival and excursion.
@@ -143,6 +143,14 @@ export const EventTypeS = z.enum([
   // B round 2: stale client effects dropped on respawn, server-rejected inventory clicks (retried),
   // the plan chosen after a respawn.
   'effects_reset', 'inventory_retry', 'respawn_plan', 'search_region', 'search_relocation',
+  // Milestone C: barter and gold accounting, fortress search legs and detections, blaze fights,
+  // enderman hunting, the Nether trail back to the portal.
+  'barter', 'fortress', 'blaze', 'enderman', 'trail',
+  // C round 2: bastion gold (blocks, chests, guards), the replacement kit and bed at the portal,
+  // the opportunity route.
+  'bastion', 'stash', 'c_route',
+  // A fire resistance potion used by the lava escape reflex.
+  'lava_potion',
 ])
 export type EventType = z.infer<typeof EventTypeS>
 
@@ -227,7 +235,7 @@ export const DecisionResponseS = z.object({
 export type DecisionResponse = z.infer<typeof DecisionResponseS>
 
 // ── Bot process config (evaluator → bot). Never contains the seed. ───────
-export const ScenarioS = z.enum(['m0', 'navbench', 'a', 'b'])
+export const ScenarioS = z.enum(['m0', 'navbench', 'a', 'b', 'c'])
 export type Scenario = z.infer<typeof ScenarioS>
 
 export const BotConfigS = z.object({

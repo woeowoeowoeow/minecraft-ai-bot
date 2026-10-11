@@ -6,17 +6,17 @@ import { once } from 'node:events'
 import * as mfNs from 'mineflayer'
 import { Controller, type ControllerResult } from '../controller/controller.js'
 import { ProgressionController } from '../controller/progression.js'
-import { A_FLAGS, B_FLAGS, builtPortal } from '../planner/milestones.js'
+import { A_FLAGS, B_FLAGS, builtPortal, C_FLAGS } from '../planner/milestones.js'
 import { onInventoryRetry, resetWindows } from './inventory-sync.js'
 import { respawnWaiter } from './respawn.js'
 import { runNavBench } from '../controller/navbench.js'
 import { loadPathfinder, PathfinderNavigator } from '../nav/pathfinder.js'
 import { EventBus } from '../observer/events.js'
 import { Observer } from '../observer/observer.js'
-import { A_MILESTONES, A_REQUIREMENTS, B_MILESTONES, B_REQUIREMENTS, M0_REQUIREMENTS, MILESTONES } from '../planner/policy.js'
+import { A_MILESTONES, A_REQUIREMENTS, B_MILESTONES, B_REQUIREMENTS, C_MILESTONES, C_REQUIREMENTS, M0_REQUIREMENTS, MILESTONES } from '../planner/policy.js'
 import { makeReasoner, type Script } from '../planner/reasoner.js'
 import { BotConfigS, type BotResult, type NavBenchTrial } from '../schema/index.js'
-import { registerASkills, registerBSkills, registerM0Skills } from '../skills/registry.js'
+import { registerASkills, registerBSkills, registerCSkills, registerM0Skills } from '../skills/registry.js'
 import { SkillRunner } from '../skills/runner.js'
 import type { SkillEnv } from '../skills/types.js'
 import { Telemetry } from '../telemetry/telemetry.js'
@@ -65,9 +65,9 @@ async function main (): Promise<void> {
   let finished = false
   let controller: Controller | null = null
   let progression: ProgressionController | null = null
-  const progressive = cfg.scenario === 'a' || cfg.scenario === 'b'
-  const milestoneDefs = cfg.scenario === 'b' ? B_MILESTONES : cfg.scenario === 'a' ? A_MILESTONES : MILESTONES
-  const flagDefs = cfg.scenario === 'b' ? { ...A_FLAGS, ...B_FLAGS } : A_FLAGS
+  const progressive = cfg.scenario === 'a' || cfg.scenario === 'b' || cfg.scenario === 'c'
+  const milestoneDefs = cfg.scenario === 'c' ? C_MILESTONES : cfg.scenario === 'b' ? B_MILESTONES : cfg.scenario === 'a' ? A_MILESTONES : MILESTONES
+  const flagDefs = cfg.scenario === 'c' ? { ...A_FLAGS, ...B_FLAGS, ...C_FLAGS } : cfg.scenario === 'b' ? { ...A_FLAGS, ...B_FLAGS } : A_FLAGS
   let navbench: NavBenchTrial[] | undefined
   let stopRequested = false
   const portalSummary = () => portalSummaryOf(obs)
@@ -93,7 +93,7 @@ async function main (): Promise<void> {
         physicsCorrections: obs.physicsCorrections,
         interrupts: progression?.interrupts,
         navbench,
-        portal: cfg.scenario === 'b' ? portalSummary() : undefined,
+        portal: cfg.scenario === 'b' || cfg.scenario === 'c' ? portalSummary() : undefined,
       }
       bus.emit('run_end', { outcome: r.outcome, reason: r.reason }, r.outcome === 'goal_reached' ? 'info' : 'warn')
       telemetry.writeDigest('run_end')
@@ -166,7 +166,7 @@ async function main (): Promise<void> {
     random,
     capture: label => { telemetry.snapshot(label) },
   }
-  const runner = cfg.scenario === 'b' ? registerBSkills(new SkillRunner(env)) : cfg.scenario === 'a' ? registerASkills(new SkillRunner(env)) : registerM0Skills(new SkillRunner(env))
+  const runner = cfg.scenario === 'c' ? registerCSkills(new SkillRunner(env)) : cfg.scenario === 'b' ? registerBSkills(new SkillRunner(env)) : cfg.scenario === 'a' ? registerASkills(new SkillRunner(env)) : registerM0Skills(new SkillRunner(env))
 
   let script: Script = {}
   if (cfg.reasoner === 'scripted') {
@@ -187,7 +187,7 @@ async function main (): Promise<void> {
     progression = new ProgressionController({
       runner, bus, telemetry,
       state: () => obs.state(), setObjective: o => obs.setObjective(o),
-      requirements: cfg.scenario === 'b' ? B_REQUIREMENTS : A_REQUIREMENTS, milestones: milestoneDefs, flags: flagDefs, target: cfg.scenario === 'b' ? 'B' : 'A', deadline,
+      requirements: cfg.scenario === 'c' ? C_REQUIREMENTS : cfg.scenario === 'b' ? B_REQUIREMENTS : A_REQUIREMENTS, milestones: milestoneDefs, flags: flagDefs, target: cfg.scenario === 'c' ? 'C' : cfg.scenario === 'b' ? 'B' : 'A', deadline,
       waitForRespawn: async () => { await respawn.wait(15_000, 500) },
       resync: async () => { await resetWindows(bot) },
       afterDeath: () => { nav.stop(); obs.afterDeath() },

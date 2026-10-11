@@ -129,3 +129,61 @@ export const B_FLAGS: Record<string, (s: WorldState) => boolean> = {
   excursion: excursionDone,
   return_ok: returnOk,
 }
+
+// ── Milestone C: fortress, blaze rods, pearls, back in the Overworld (milestones.md) ──
+// Inventory counts from the client, the dimension from the client's own respawn packets,
+// and the transitions the observer recorded. The evaluator re-checks the inventory and
+// the dimension on the server.
+const LATER = progression.later
+
+export const rodCount = (s: WorldState) => n(s, 'blaze_rod')
+export const pearlCount = (s: WorldState) => n(s, 'ender_pearl')
+export const rodsDone = (s: WorldState) => rodCount(s) >= LATER.blaze_rods
+export const pearlsDone = (s: WorldState) => pearlCount(s) >= LATER.ender_pearls
+
+/** Milestone B reached in this run (first-reached time recorded by the controller). */
+export const bDone = (s: WorldState) => s.milestones.B != null
+
+/** A fortress seen in the Nether's loaded chunks (observer: natural nether bricks). */
+export function fortressKnown (s: WorldState): boolean {
+  return s.memory.locations.some(l => l.kind === 'fortress' && l.dim === 'the_nether')
+}
+
+/** A bastion seen in the Nether's loaded chunks (observer: polished blackstone bricks, gilded blackstone). */
+export function bastionKnown (s: WorldState): boolean {
+  return s.memory.locations.some(l => l.kind === 'bastion' && l.dim === 'the_nether')
+}
+
+/** Nether entries through a portal after milestone B (the C trip). */
+export function cEntries (s: WorldState): Tr[] {
+  const b = s.milestones.B
+  if (b == null) return []
+  return s.memory.transitions.filter(t => t.from === 'overworld' && t.to === 'the_nether' && t.cause === 'portal' && t.t >= b)
+}
+
+/**
+ * Milestone C: after B, holding ≥ 7 blaze rods and ≥ 14 ender pearls, back in the Overworld
+ * through a portal (the latest transition is a Nether → Overworld portal trip, not a death
+ * respawn) that followed a Nether entry made after B.
+ */
+export function milestoneC (s: WorldState): boolean {
+  if (!bDone(s) || s.dim !== 'overworld' || !rodsDone(s) || !pearlsDone(s)) return false
+  const last = s.memory.transitions[s.memory.transitions.length - 1]
+  if (!last || last.from !== 'the_nether' || last.to !== 'overworld' || last.cause !== 'portal') return false
+  return cEntries(s).some(e => e.t < last.t)
+}
+
+/** Funnel flags after B (first reached). */
+export const C_FLAGS: Record<string, (s: WorldState) => boolean> = {
+  c_reentered: s => s.dim === 'the_nether' && cEntries(s).length > 0,
+  piglins_seen: s => bDone(s) && s.memory.locations.some(l => l.kind === 'piglins' && l.dim === 'the_nether'),
+  gold_ingot_n: s => bDone(s) && s.dim === 'the_nether' && n(s, 'gold_ingot') >= 1,
+  pearl_1: s => pearlCount(s) >= 1,
+  pearls_14: pearlsDone,
+  fortress_found: fortressKnown,
+  bastion_found: bastionKnown,
+  blaze_spawner_found: s => s.memory.locations.some(l => l.kind === 'blaze_spawner' && l.dim === 'the_nether'),
+  rod_1: s => rodCount(s) >= 1,
+  rods_7: rodsDone,
+  c_kit: s => rodsDone(s) && pearlsDone(s),
+}
